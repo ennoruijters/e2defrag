@@ -1,0 +1,5 @@
+.*
+*.o
+e2defrag
+
+!.gitignore
