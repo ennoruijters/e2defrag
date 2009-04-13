@@ -2,6 +2,7 @@
 #define E2DEFRAG_H
 
 #include <ext2fs/ext2_fs.h>
+#include <stdint.h>
 #include "rbtree.h"
 
 typedef __u64 blk64_t;
@@ -10,6 +11,9 @@ typedef __u32 ext2_ino_t;
 
 #define SUPERBLOCK_OFFSET 1024
 #define SUPERBLOCK_SIZE 1024
+
+#define PAGE_START(x) \
+	((void *)(((uintptr_t)(x)) - (((uintptr_t)(x)) % getpagesize())))
 
 struct sparse_extent {
 	blk64_t start;

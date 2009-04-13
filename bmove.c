@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <sys/mman.h>
 #include "e2defrag.h"
 
 static int transfer_pipe[2] = {-1, -1};
@@ -69,19 +70,25 @@ static int write_extent_metadata(struct defrag_ctx *c, struct data_extent *e)
 	struct inode *inode = c->inodes[e->inode_nr];
 	blk64_t cur_block = e->start_block;
 	blk64_t cur_logical = e->start_logical;
+	int sync_inode = 0;
 
 	if (cur_logical < EXT2_NDIR_BLOCKS) {
 		int i;
 		for (i = 0; i < EXT2_NDIR_BLOCKS && cur_block; i++) {
 			if (cur_logical == i) {
 				inode->on_disk->i_block[i] = cur_block++;
+				sync_inode = 1;
 				if (cur_block > e->end_block)
-					return 0;
+					goto out;
 				cur_logical = next_lblock(e, cur_logical);
 			}
 		}
 	}
 	/* TODO: Handling of indirect blocks */
+out:
+	if (sync_inode)
+		/* Assumes the inode is completely within one page */
+		msync(PAGE_START(inode->on_disk), getpagesize(), MS_SYNC);
 	return 0;
 }
 
@@ -110,8 +117,11 @@ int move_file_extent(struct defrag_ctx *c, struct inode *i,
 	if (ret)
 		return -1;
 	old_start = extent_to_copy->start_block;
-	mark_blocks_unused(c, old_start, blk_cnt);
 	extent_to_copy->start_block = new_start;
 	extent_to_copy->end_block = extent_to_copy->start_block + blk_cnt;
-	return write_extent_metadata(c, extent_to_copy);
+	ret = write_extent_metadata(c, extent_to_copy);
+	if (ret)
+		return -1;
+	mark_blocks_unused(c, old_start, blk_cnt);
+	return 0;
 }
