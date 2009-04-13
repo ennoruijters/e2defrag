@@ -9,39 +9,40 @@
 static inline void insert_data_extent(struct defrag_ctx *c,
                                       struct data_extent *e)
 {
-	struct rb_node **p = &c->extent_tree.rb_node;
+	struct rb_node **p = &c->extents_by_block.rb_node;
 	struct rb_node *parent = NULL;
 
 	while (*p) {
 		struct data_extent *extent;
 
 		parent = *p;
-		extent = rb_entry(parent, struct data_extent, node);
+		extent = rb_entry(parent, struct data_extent, block_rb);
 
-#ifndef NDEBUG
-		if (e->start_block == extent->start_block) {
-			printf("Assertion failed: e->start_block != "
-			       "extent->start_block at %s:%d\n",
-			       __FILE__,__LINE__);
-			printf("Block: %llu\n", e->start_block);
-			printf("Inodes: %u (in tree) and %u\n",
-			       extent->inode_nr, e->inode_nr);
-			printf("Logicals: %llu (in tree) and %llu\n",
-			       extent->start_logical, e->start_logical);
-			printf("End blocks: %llu and %llu\n",
-			       extent->end_block, e->end_block);
-			if (e == extent)
-				printf("Duplicate insertion\n");
-			exit(1);
-		}
-#endif
+		assert(e->start_block != extent->start_block);
 		if (e->start_block < extent->start_block)
 			p = &(*p)->rb_left;
 		else
 			p = &(*p)->rb_right;
 	}
-	rb_link_node(&e->node, parent, p);
-	rb_insert_color(&e->node, &c->extent_tree);
+	rb_link_node(&e->block_rb, parent, p);
+	rb_insert_color(&e->block_rb, &c->extents_by_block);
+
+	p = &c->extents_by_size.rb_node;
+	parent = NULL;
+	while (*p) {
+		struct data_extent *extent;
+
+		parent = *p;
+		extent = rb_entry(parent, struct data_extent, size_rb);
+
+		if (e->end_block - e->start_block
+		                      < extent->end_block - extent->start_block)
+			p = &(*p)->rb_left;
+		else
+			p = &(*p)->rb_right;
+	}
+	rb_link_node(&e->size_rb, parent, p);
+	rb_insert_color(&e->size_rb, &c->extents_by_size);
 }
 
 static inline void insert_free_extent(struct defrag_ctx *c,
@@ -70,10 +71,10 @@ static inline void insert_free_extent(struct defrag_ctx *c,
 static inline struct data_extent *containing_data_extent(struct defrag_ctx *c,
                                                          blk64_t block)
 {
-	struct rb_node *ret = c->extent_tree.rb_node;
+	struct rb_node *ret = c->extents_by_block.rb_node;
 	while (ret) {
 		struct data_extent *e;
-		e = rb_entry(ret, struct data_extent, node);
+		e = rb_entry(ret, struct data_extent, block_rb);
 		if (block > e->start_block && block < e->end_block)
 			return e;
 		if (block > e->start_block)

@@ -23,7 +23,8 @@ struct data_extent {
 	struct sparse_extent *sparse;
 	/* sparse extent list terminated by a sparse extent of 0 blocks */
 	ext2_ino_t inode_nr;
-	struct rb_node node;
+	struct rb_node block_rb;
+	struct rb_node size_rb;
 };
 
 struct free_extent {
@@ -41,7 +42,8 @@ struct inode {
 
 struct defrag_ctx {
 	struct ext2_super_block sb;
-	struct rb_root extent_tree;
+	struct rb_root extents_by_block;
+	struct rb_root extents_by_size;
 	struct rb_root free_tree;
 	struct {
 		struct ext2_inode *map_start;

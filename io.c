@@ -57,7 +57,9 @@ struct defrag_ctx *open_drive(char *filename, char read_only)
 		goto error_alloc;
 	ret->fd = fd;
 	ret->sb = sb;
-	ret->extent_tree = RB_ROOT;
+	ret->read_only = read_only;
+	ret->extents_by_block = RB_ROOT;
+	ret->extents_by_size = RB_ROOT;
 	ret->free_tree = RB_ROOT;
 	return ret;
 
@@ -255,10 +257,11 @@ int set_e2_filesystem_data(struct defrag_ctx *c)
 		printf("F: %llu-%llu\n", f->start_block, f->end_block);
 		n = rb_next(n);
 	}
-	n = rb_first(&c->extent_tree);
+	n = rb_first(&c->extents_by_block);
 	while (n) {
-		struct data_extent *f = rb_entry(n, struct data_extent, node);
-		printf("U: %llu-%llu(%llu) of %u\n", f->start_block, f->end_block, f->start_logical, f->inode_nr);
+		struct data_extent *f = rb_entry(n,struct data_extent,block_rb);
+		printf("U: %llu-%llu(%llu) of %u\n", f->start_block,
+		       f->end_block, f->start_logical, f->inode_nr);
 		n = rb_next(n);
 	}
 #endif
