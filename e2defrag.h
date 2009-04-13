@@ -47,8 +47,11 @@ struct defrag_ctx {
 	struct rb_root free_tree;
 	struct {
 		struct ext2_inode *map_start;
-		size_t map_length;
-	} *inode_table_maps;
+		unsigned char *bitmap;
+		size_t inode_map_length;
+		size_t bitmap_map_length;
+		off_t bitmap_offset;
+	} *bg_maps;
 	int nr_inode_maps;
 	int fd;
 	int read_only;

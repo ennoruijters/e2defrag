@@ -51,9 +51,8 @@ struct defrag_ctx *open_drive(char *filename, char read_only)
 	nr_block_groups = sb.s_blocks_count / sb.s_blocks_per_group;
 	if (sb.s_blocks_count % sb.s_blocks_per_group)
 		nr_block_groups++;
-	ret->inode_table_maps = malloc(nr_block_groups
-	                                      * sizeof(*ret->inode_table_maps));
-	if (!ret->inode_table_maps)
+	ret->bg_maps = malloc(nr_block_groups * sizeof(*ret->bg_maps));
+	if (!ret->bg_maps)
 		goto error_alloc;
 	ret->fd = fd;
 	ret->sb = sb;
@@ -118,8 +117,8 @@ long parse_inode_table(struct defrag_ctx *c, blk64_t bitmap_block,
 		munmap(bitmap - bitmap_delta_offset, bitmap_length);
 		return -1;
 	}
-	c->inode_table_maps[group_nr].map_start = (void *)inode_table;
-	c->inode_table_maps[group_nr].map_length = table_length;
+	c->bg_maps[group_nr].map_start = (void *)inode_table;
+	c->bg_maps[group_nr].inode_map_length = table_length;
 	inode_table += table_delta_offset;
 
 	for (i = 0; i < c->sb.s_inodes_per_group; i++) {
@@ -152,10 +151,12 @@ void close_drive(struct defrag_ctx *c)
 {
 	int i;
 	for (i = 0; i < c->nr_inode_maps; i++) {
-		munmap(c->inode_table_maps[i].map_start,
-		       c->inode_table_maps[i].map_length);
+		munmap(c->bg_maps[i].map_start,
+		       c->bg_maps[i].inode_map_length);
+		munmap(c->bg_maps[i].bitmap - c->bg_maps[i].bitmap_offset,
+		       c->bg_maps[i].bitmap_map_length);
 	}
-	free(c->inode_table_maps);
+	free(c->bg_maps);
 	for (i = 0; i < c->sb.s_inodes_count; i++) {
 		int j;
 		if (!c->inodes[i])
@@ -181,23 +182,35 @@ void close_drive(struct defrag_ctx *c)
 long parse_free_bitmap(struct defrag_ctx *c, blk64_t bitmap_block,
                        int group_nr)
 {
-	unsigned char bitmap[EXT2_BLOCK_SIZE(&c->sb)];
+	unsigned char *bitmap;
+	off_t start_offset, delta_offset;
+	size_t map_length;
 	const blk64_t first_block = group_nr * c->sb.s_blocks_per_group;
 	struct free_extent *free_extent = NULL;
 	struct data_extent *file_extent = NULL;
 	long count = 0;
 	int i;
 
-	if (c->sb.s_blocks_per_group % CHAR_BIT) {
-		printf("Invalid nr. of blocks per group\n");
-		errno = EINVAL;
+	start_offset = bitmap_block * EXT2_BLOCK_SIZE(&c->sb);
+	map_length = c->sb.s_blocks_per_group / CHAR_BIT;
+	delta_offset = start_offset % getpagesize();
+	start_offset -= delta_offset;
+	map_length += delta_offset;
+	if (map_length % getpagesize())
+		map_length += getpagesize() - (map_length % getpagesize());
+
+	i = c->read_only ? PROT_READ : (PROT_READ | PROT_WRITE);
+	bitmap = mmap(NULL, map_length, i, MAP_SHARED, c->fd, start_offset);
+	if (bitmap == MAP_FAILED)
 		return -1;
-	}
-	if (read_block(c, bitmap, bitmap_block))
-		return -1;
+	bitmap += delta_offset;
+	c->bg_maps[group_nr].bitmap = bitmap;
+	c->bg_maps[group_nr].bitmap_map_length = map_length;
+	c->bg_maps[group_nr].bitmap_offset = delta_offset;
 
 	for (i = 0; i < c->sb.s_blocks_per_group; i += CHAR_BIT) {
 		int j;
+		unsigned char mask = 1;
 		if (file_extent && file_extent->end_block > i + CHAR_BIT - 1)
 			continue;
 		if (bitmap[i / CHAR_BIT] == 0) {
@@ -213,19 +226,19 @@ long parse_free_bitmap(struct defrag_ctx *c, blk64_t bitmap_block,
 		for (j = 0; j < CHAR_BIT; j++) {
 			blk64_t block = first_block + i + j;
 			if (file_extent && file_extent->end_block > block) {
-				bitmap[i / CHAR_BIT] >>= 1;
+				mask <<= 1;
 				continue;
 			}
 			if (block >= c->sb.s_blocks_count)
 				break;
-			if (bitmap[i / CHAR_BIT] & 1) {
+			if (bitmap[i / CHAR_BIT] & mask) {
 				if (free_extent) {
 					insert_free_extent(c, free_extent);
 					free_extent = NULL;
 				}
 				file_extent = containing_data_extent(c, block);
 				if (file_extent) {
-					bitmap[i / CHAR_BIT] >>= 1;
+					mask <<= 1;
 					continue;
 				}
 				count++;
@@ -239,7 +252,7 @@ long parse_free_bitmap(struct defrag_ctx *c, blk64_t bitmap_block,
 				}
 				free_extent->end_block = block;
 			}
-			bitmap[i / CHAR_BIT] >>= 1;
+			mask <<= 1;
 		}
 	}
 	if (free_extent)
