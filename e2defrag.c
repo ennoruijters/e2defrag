@@ -30,5 +30,6 @@ int main(int argc, char *argv[])
 		printf("Error reading filesystem: %s\n", strerror(errno));
 		return errno;
 	}
+	close_drive(disk);
 	return 0;
 }

@@ -148,6 +148,36 @@ long parse_inode_table(struct defrag_ctx *c, blk64_t bitmap_block,
 	return count;
 }
 
+void close_drive(struct defrag_ctx *c)
+{
+	int i;
+	for (i = 0; i < c->nr_inode_maps; i++) {
+		munmap(c->inode_table_maps[i].map_start,
+		       c->inode_table_maps[i].map_length);
+	}
+	free(c->inode_table_maps);
+	for (i = 0; i < c->sb.s_inodes_count; i++) {
+		int j;
+		if (!c->inodes[i])
+			continue;
+		for (j = 0; j < c->inodes[i]->extent_count; j++) {
+			struct data_extent *e = &c->inodes[i]->extents[j];
+			struct sparse_extent *s = e->sparse;
+			free (s);
+		}
+		free(c->inodes[i]);
+	}
+
+	while (c->free_tree.rb_node) {
+		struct free_extent *f;
+		f = rb_entry(c->free_tree.rb_node, struct free_extent, node);
+		rb_erase(c->free_tree.rb_node, &c->free_tree);
+		free(f);
+	}
+	close(c->fd);
+	free(c);
+}
+
 long parse_free_bitmap(struct defrag_ctx *c, blk64_t bitmap_block,
                        int group_nr)
 {
