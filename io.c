@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <malloc.h>
+#include <sys/mman.h>
 #include "e2defrag.h"
 #include "extree.h"
 
@@ -29,8 +30,8 @@ struct defrag_ctx *open_drive(char *filename, char read_only)
 {
 	struct defrag_ctx *ret;
 	struct ext2_super_block sb;
-	int tmp;
-	int fd;
+	int tmp, fd;
+	int nr_block_groups;
 
 	fd = open(filename, read_only ? O_RDONLY : O_RDWR);
 	if (fd < 0)
@@ -47,12 +48,21 @@ struct defrag_ctx *open_drive(char *filename, char read_only)
 	             + sizeof(struct inode *) * sb.s_inodes_count, 1);
 	if (!ret)
 		goto error_open;
+	nr_block_groups = sb.s_blocks_count / sb.s_blocks_per_group;
+	if (sb.s_blocks_count % sb.s_blocks_per_group)
+		nr_block_groups++;
+	ret->inode_table_maps = malloc(nr_block_groups
+	                                      * sizeof(*ret->inode_table_maps));
+	if (!ret->inode_table_maps)
+		goto error_alloc;
 	ret->fd = fd;
 	ret->sb = sb;
 	ret->extent_tree = RB_ROOT;
 	ret->free_tree = RB_ROOT;
 	return ret;
 
+error_alloc:
+	free(ret);
 error_open:
 	close(fd);
 error_out:
@@ -62,53 +72,77 @@ error_out:
 long parse_inode_table(struct defrag_ctx *c, blk64_t bitmap_block,
                        blk64_t table_start, int group_nr)
 {
-	unsigned char bitmap[EXT2_BLOCK_SIZE(&c->sb)];
-	unsigned char inode_table[EXT2_BLOCK_SIZE(&c->sb)];
+	unsigned char *bitmap;
+	off_t bitmap_start_offset, bitmap_delta_offset;
+	size_t bitmap_length;
+	unsigned char *inode_table;
+	off_t table_start_offset, table_delta_offset;
+	size_t table_length;
 	long count = 0;
 	const ext2_ino_t first_inode = group_nr * c->sb.s_inodes_per_group;
 	int i, ret;
-	const char inodes_per_block = EXT2_BLOCK_SIZE(&c->sb)
-	                                     / EXT2_INODE_SIZE(&c->sb);
 
-	if (c->sb.s_inodes_per_group % CHAR_BIT) {
-		printf("Invalid nr. of inodes per group\n");
-		errno = EINVAL;
+	bitmap_start_offset = bitmap_block * EXT2_BLOCK_SIZE(&c->sb);
+	bitmap_delta_offset = bitmap_start_offset % getpagesize();
+	bitmap_length = (c->sb.s_inodes_per_group + CHAR_BIT - 1) / CHAR_BIT;
+	if (bitmap_delta_offset) {
+		bitmap_start_offset -= bitmap_delta_offset;
+		bitmap_length += bitmap_delta_offset;
+	}
+	if (bitmap_length % getpagesize()) {
+		bitmap_length += getpagesize();
+		bitmap_length -= (bitmap_length % getpagesize());
+	}
+
+	bitmap = mmap(NULL, bitmap_length, PROT_READ | PROT_WRITE, MAP_PRIVATE,
+	              c->fd, bitmap_start_offset);
+	if (bitmap == MAP_FAILED)
+		return -1;
+	bitmap = bitmap + bitmap_delta_offset;
+
+	table_start_offset = table_start * EXT2_BLOCK_SIZE(&c->sb);
+	table_delta_offset = table_start_offset % getpagesize();
+	table_length = c->sb.s_inodes_per_group * EXT2_INODE_SIZE(&c->sb);
+	if (table_delta_offset) {
+		table_start_offset -= table_delta_offset;
+		table_length += table_delta_offset;
+	}
+	if (table_length % getpagesize())
+		table_length += getpagesize() - (table_length % getpagesize());
+	i = c->read_only ? (PROT_READ) : (PROT_READ | PROT_WRITE);
+	inode_table = mmap(NULL, table_length, i, MAP_SHARED, c->fd,
+	                   table_start_offset);
+	if (inode_table == MAP_FAILED) {
+		munmap(bitmap - bitmap_delta_offset, bitmap_length);
 		return -1;
 	}
-	if (read_block(c, bitmap, bitmap_block))
-		return -1;
+	c->inode_table_maps[group_nr].map_start = (void *)inode_table;
+	c->inode_table_maps[group_nr].map_length = table_length;
+	inode_table += table_delta_offset;
 
-	for (i = 0; i < c->sb.s_inodes_per_group; i += CHAR_BIT) {
-		int k = i % inodes_per_block;
-		if (k == 0) {
-			blk64_t table_block;
-			table_block = table_start + i / inodes_per_block;
-			if (read_block(c, inode_table, table_block))
-				return -1;
-		}
-		int j;
-		if (bitmap[i / CHAR_BIT] == 0)
+	for (i = 0; i < c->sb.s_inodes_per_group; i++) {
+		if (bitmap[i / CHAR_BIT] == 0) {
+			i += CHAR_BIT - (i % CHAR_BIT);
 			continue;
-		for (j = 0; j < CHAR_BIT; j++) {
-			if (bitmap[i / CHAR_BIT] & 1) {
-				struct ext2_inode *inode;
-				inode = (struct ext2_inode *)(inode_table
-				           + (k + j) * EXT2_INODE_SIZE(&c->sb));
-				ext2_ino_t inode_nr = first_inode + i + j + 1;
-				/* +1 because we start counting inodes at 1
-				 * (both for convention and because 0 is the
-				 * owner of free space.
-				 */
-				printf("At inode %u of %u\r", inode_nr,
-						c->sb.s_inodes_count);
-				ret = parse_inode(c, inode_nr, inode);
-				if (ret < 0)
-					return -1;
-				count++;
-			}
-			bitmap[i / CHAR_BIT] >>= 1;
 		}
+		if (bitmap[i / CHAR_BIT] & 1) {
+			struct ext2_inode *inode;
+			inode = (struct ext2_inode *)
+			            (inode_table + i * EXT2_INODE_SIZE(&c->sb));
+			ext2_ino_t inode_nr = first_inode + i + 1;
+			/* +1 because we start counting inodes at 1
+			 * for convention.
+			 */
+			printf("At inode %u of %u\r", inode_nr,
+			                                  c->sb.s_inodes_count);
+			ret = parse_inode(c, inode_nr, inode);
+			if (ret < 0)
+				return -1;
+			count++;
+		}
+		bitmap[i / CHAR_BIT] >>= 1;
 	}
+	munmap(bitmap - bitmap_delta_offset, bitmap_length);
 	return count;
 }
 

@@ -35,6 +35,7 @@ struct free_extent {
 struct inode {
 	e2_blkcnt_t block_count;
 	e2_blkcnt_t extent_count;
+	struct ext2_inode *on_disk; /* We don't care about the extended part */
 	struct data_extent extents[];
 };
 
@@ -42,7 +43,13 @@ struct defrag_ctx {
 	struct ext2_super_block sb;
 	struct rb_root extent_tree;
 	struct rb_root free_tree;
+	struct {
+		struct ext2_inode *map_start;
+		size_t map_length;
+	} *inode_table_maps;
+	int nr_inode_maps;
 	int fd;
+	int read_only;
 	struct inode *inodes[];
 };
 

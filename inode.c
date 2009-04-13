@@ -256,7 +256,7 @@ static struct inode *make_inode_extents(struct defrag_ctx *c,
 }
 
 struct inode *read_inode_blocks(struct defrag_ctx *c, ext2_ino_t inode_nr,
-                                __u32 nblocks, __u32 blocks[EXT2_N_BLOCKS])
+                                struct ext2_inode *inode)
 {
 	struct tmp_extent first_extent = {
 		.s = NULL,
@@ -267,6 +267,8 @@ struct inode *read_inode_blocks(struct defrag_ctx *c, ext2_ino_t inode_nr,
 	struct inode *ret;
 	struct obstack mempool;
 	__u32 logical_block = 0;
+	__u32 nblocks = inode->i_blocks;
+	__u32 *blocks = inode->i_block;
 	int i;
 
 	if (nblocks == 0) {
@@ -274,6 +276,7 @@ struct inode *read_inode_blocks(struct defrag_ctx *c, ext2_ino_t inode_nr,
 		if (ret != NULL) {
 			ret->block_count = nblocks;
 			ret->extent_count = 0;
+			ret->on_disk = inode;
 		}
 		return ret;
 	}
@@ -314,6 +317,8 @@ struct inode *read_inode_blocks(struct defrag_ctx *c, ext2_ino_t inode_nr,
 			return NULL;
 	}
 	ret = make_inode_extents(c, &first_extent, inode_nr, logical_block);
+	if (ret)
+		ret->on_disk = inode;
 	obstack_free(&mempool, NULL);
 	return ret;
 }
@@ -342,8 +347,7 @@ long parse_inode(struct defrag_ctx *c, ext2_ino_t inode_nr,
 	} else {
 		e2_blkcnt_t blocks;
 		blocks = inode->i_blocks / EXT2_SECTORS_PER_BLOCK(&c->sb);
-		c->inodes[inode_nr] = read_inode_blocks(c, inode_nr, blocks,
-		                                        inode->i_block);
+		c->inodes[inode_nr] = read_inode_blocks(c, inode_nr, inode);
 		if (c->inodes[inode_nr] != NULL)
 			return 0;
 		else
