@@ -26,6 +26,21 @@ int read_block(struct defrag_ctx *c, void *buf, blk64_t block)
 	return 0;
 }
 
+int write_block(struct defrag_ctx *c, void *buf, blk64_t block)
+{
+	long long ret;
+	ret = lseek64(c->fd, block * EXT2_BLOCK_SIZE(&c->sb), SEEK_SET);
+	if (ret < 0) {
+		printf("Cannot seek to block %llu (block_size %d)\n", block,
+		       EXT2_BLOCK_SIZE(&c->sb));
+		return -1;
+	}
+	ret = write(c->fd, buf, EXT2_BLOCK_SIZE(&c->sb));
+	if (ret < EXT2_BLOCK_SIZE(&c->sb))
+		return -1;
+	return 0;
+}
+
 struct defrag_ctx *open_drive(char *filename, char read_only)
 {
 	struct defrag_ctx *ret;

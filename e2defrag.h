@@ -12,6 +12,13 @@ typedef __u32 ext2_ino_t;
 #define SUPERBLOCK_OFFSET 1024
 #define SUPERBLOCK_SIZE 1024
 
+/* Logical block numbers of the first-level indirect blocks */
+#define EXT2_IND_LBLOCK(sb)	EXT2_IND_BLOCK
+#define EXT2_DIND_LBLOCK(sb)	(EXT2_DIND_BLOCK + 1 + EXT2_ADDR_PER_BLOCK(sb))
+#define EXT2_TIND_LBLOCK(sb)	(EXT2_TIND_BLOCK + 1 \
+                                 + EXT2_ADDR_PER_BLOCK(sb) \
+                                   * (EXT2_ADDR_PER_BLOCK(sb) + 1))
+
 #define PAGE_START(x) \
 	((void *)(((uintptr_t)(x)) - (((uintptr_t)(x)) % getpagesize())))
 
@@ -77,6 +84,7 @@ long parse_inode(struct defrag_ctx *c, ext2_ino_t inode_nr,
 /* io.c */
 struct defrag_ctx *open_drive(char *filename, char read_only);
 int read_block(struct defrag_ctx *c, void *buf, blk64_t block);
+int write_block(struct defrag_ctx *c, void *buf, blk64_t block);
 int set_e2_filesystem_data(struct defrag_ctx *c);
 void close_drive(struct defrag_ctx *c);
 
