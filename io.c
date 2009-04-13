@@ -210,6 +210,8 @@ long parse_free_bitmap(struct defrag_ctx *c, blk64_t bitmap_block,
 			bitmap[i / CHAR_BIT] >>= 1;
 		}
 	}
+	if (free_extent)
+		insert_free_extent(c, free_extent);
 	return count;
 }
 
