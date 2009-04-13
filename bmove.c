@@ -86,11 +86,12 @@ static int write_extent_metadata(struct defrag_ctx *c, struct data_extent *e)
 }
 
 int move_file_extent(struct defrag_ctx *c, struct inode *i,
-                     blk64_t logical_start, blk64_t new_start, size_t nr_blocks)
+                     blk64_t logical_start, blk64_t new_start)
 {
-	int j, ret;
 	struct data_extent *extent_to_copy = NULL;
-	blk64_t blk_cnt;
+	blk64_t old_start;
+	int j, ret;
+	e2_blkcnt_t blk_cnt;
 	for (j = 0; j < i->extent_count; j++) {
 		if (i->extents[j].start_logical == logical_start) {
 			extent_to_copy = &i->extents[j];
@@ -101,13 +102,16 @@ int move_file_extent(struct defrag_ctx *c, struct inode *i,
 		errno = EINVAL;
 		return -1;
 	}
-	ret = __move_block_range(c, extent_to_copy->start_block, new_start,
-	                         nr_blocks);
 	blk_cnt = extent_to_copy->end_block - extent_to_copy->start_block;
-	extent_to_copy->start_block = new_start;
-	extent_to_copy->end_block = extent_to_copy->start_block + blk_cnt;
+	mark_blocks_used(c, new_start, blk_cnt);
+	ret = __move_block_range(c, extent_to_copy->start_block, new_start,
+	                         blk_cnt);
 	ret = fdatasync(c->fd);
 	if (ret)
 		return -1;
+	old_start = extent_to_copy->start_block;
+	mark_blocks_unused(c, old_start, blk_cnt);
+	extent_to_copy->start_block = new_start;
+	extent_to_copy->end_block = extent_to_copy->start_block + blk_cnt;
 	return write_extent_metadata(c, extent_to_copy);
 }

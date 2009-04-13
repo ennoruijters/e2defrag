@@ -60,6 +60,12 @@ struct defrag_ctx {
 
 /* FUNCTION DECLARATIONS */
 
+/* bitmap.c */
+void mark_blocks_unused(struct defrag_ctx *c, blk64_t first_block,
+                        e2_blkcnt_t count);
+void mark_blocks_used(struct defrag_ctx *c, blk64_t first_block,
+                      e2_blkcnt_t count);
+
 /* inode.c */
 long parse_inode(struct defrag_ctx *c, ext2_ino_t inode_nr,
                  struct ext2_inode *inode);
