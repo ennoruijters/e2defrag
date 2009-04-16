@@ -296,9 +296,10 @@ int set_e2_filesystem_data(struct defrag_ctx *c)
 
 	for (i = 0; i < num_block_groups; i++) {
 		long ret = 0;
-		if ((gds[i].bg_flags & (EXT2_BG_INODE_UNINIT
-		                        | EXT2_BG_INODE_ZEROED)))
+		if ((gds[i].bg_flags & (EXT2_BG_INODE_UNINIT))
+		    || gds[i].bg_free_inodes_count == c->sb.s_inodes_per_group){
 			continue;
+		}
 		ret = parse_inode_table(c, gds[i].bg_inode_bitmap,
 		                        gds[i].bg_inode_table, i);
 		if (ret < 0)
