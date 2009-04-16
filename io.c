@@ -200,7 +200,8 @@ long parse_free_bitmap(struct defrag_ctx *c, blk64_t bitmap_block,
 	unsigned char *bitmap;
 	off_t start_offset, delta_offset;
 	size_t map_length;
-	const blk64_t first_block = group_nr * c->sb.s_blocks_per_group;
+	blk64_t first_block = group_nr * c->sb.s_blocks_per_group;
+	first_block += c->sb.s_first_data_block;
 	struct free_extent *free_extent = NULL;
 	struct data_extent *file_extent = NULL;
 	long count = 0;
@@ -214,8 +215,9 @@ long parse_free_bitmap(struct defrag_ctx *c, blk64_t bitmap_block,
 	if (map_length % getpagesize())
 		map_length += getpagesize() - (map_length % getpagesize());
 
-	i = c->read_only ? PROT_READ : (PROT_READ | PROT_WRITE);
-	bitmap = mmap(NULL, map_length, i, MAP_SHARED, c->fd, start_offset);
+	i = c->read_only ? MAP_PRIVATE : MAP_SHARED;
+	bitmap = mmap(NULL, map_length, PROT_READ | PROT_WRITE, i,
+	              c->fd, start_offset);
 	if (bitmap == MAP_FAILED)
 		return -1;
 	bitmap += delta_offset;
@@ -282,8 +284,11 @@ int set_e2_filesystem_data(struct defrag_ctx *c)
 	                       / c->sb.s_blocks_per_group;
 	struct ext2_group_desc gds[num_block_groups];
 	int ret, i;
+	off_t gd_offset = EXT2_BLOCK_SIZE(&c->sb);
+	if (gd_offset < SUPERBLOCK_OFFSET + SUPERBLOCK_SIZE)
+		gd_offset = SUPERBLOCK_OFFSET + SUPERBLOCK_SIZE;
 
-	if (lseek(c->fd, EXT2_BLOCK_SIZE(&c->sb), SEEK_SET) == (off_t) -1)
+	if (lseek(c->fd, gd_offset, SEEK_SET) == (off_t) -1)
 		return -1;
 	ret = read(c->fd, gds, sizeof(*gds) * num_block_groups);
 	if (ret < sizeof(*gds) * num_block_groups)
