@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <sys/mman.h>
 #include "e2defrag.h"
+#include "extree.h"
 
 static int transfer_pipe[2] = {-1, -1};
 
@@ -328,5 +329,10 @@ int move_file_extent(struct defrag_ctx *c, struct inode *i,
 	if (ret)
 		return -1;
 	mark_blocks_unused(c, old_start, blk_cnt);
+	if (!try_extent_merge(c, i, extent_to_copy)) {
+		rb_erase(&extent_to_copy->block_rb, &c->extents_by_block);
+		insert_data_extent_by_block(c, extent_to_copy);
+		/* Extent size has not changed */
+	}
 	return 0;
 }

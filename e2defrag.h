@@ -78,8 +78,8 @@ void mark_blocks_used(struct defrag_ctx *c, blk64_t first_block,
                       e2_blkcnt_t count);
 
 /* inode.c */
-long parse_inode(struct defrag_ctx *c, ext2_ino_t inode_nr,
-                 struct ext2_inode *inode);
+long parse_inode(struct defrag_ctx *, ext2_ino_t inode_nr, struct ext2_inode *);
+int try_extent_merge(struct defrag_ctx *, struct inode *, struct data_extent *);
 
 /* io.c */
 struct defrag_ctx *open_drive(char *filename, char read_only);

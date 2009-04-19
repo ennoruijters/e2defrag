@@ -27,6 +27,171 @@ struct tmp_extent {
 	struct tmp_extent *next;
 };
 
+static struct sparse_extent *merge_sparse(struct sparse_extent *s1,
+                                          struct sparse_extent *s2,
+                                          blk64_t gap_start,
+                                          e2_blkcnt_t gap_length,
+                                          e2_blkcnt_t e1_blocks)
+{
+	struct sparse_extent *tmp = s1;
+	int cnt = 0;
+
+	errno = 0;
+
+	if (gap_length == 0 && cnt == 0) {
+		return s1;
+	} else if (gap_length == 0 && s1 == NULL) {
+		tmp = s2;
+		while (tmp && tmp->num_blocks) {
+			tmp->start += e1_blocks;
+			tmp++;
+		}
+		return s2;
+	}
+
+	while (tmp && tmp->num_blocks) {
+		cnt++;
+		tmp++;
+	}
+	tmp = s2;
+	while (tmp && tmp->num_blocks) {
+		cnt++;
+		tmp++;
+	}
+	if (gap_length)
+		cnt++;
+	if (cnt) {
+		struct sparse_extent *new_sparse;
+		size_t num_bytes = (cnt + 1) * sizeof(*new_sparse);
+		new_sparse = realloc(s1, num_bytes);
+		if (!new_sparse)
+			return NULL; /* errno should be ENOMEM */
+		s1 = new_sparse;
+		while (s1->num_blocks)
+			s1++;
+		if (gap_length) {
+			s1->start = gap_start;
+			s1->num_blocks = gap_length;
+			s1++;
+		}
+		tmp = s2;
+		while (s2 && s2->num_blocks != 0) {
+			s1->start = s2->start + e1_blocks;
+			s1->num_blocks = s2->num_blocks;
+			s1++;
+			s2++;
+		}
+		free(tmp);
+		s1->start = s1->num_blocks = 0;
+		return new_sparse;
+	} else {
+		return NULL;
+	}
+}
+
+
+static int merge_extents(struct inode *inode,
+                         struct data_extent *extent1,
+                         struct data_extent *extent2)
+{
+	struct sparse_extent *sparse = extent1->sparse;
+	int pos, num;
+	e2_blkcnt_t logical_gap;
+	blk64_t e1_logical_blocks = extent1->end_block - extent1->start_block+1;
+	blk64_t e1_logical_end;
+
+	while (sparse && sparse->num_blocks != 0) {
+		e1_logical_blocks += sparse->num_blocks;
+		sparse++;
+	}
+	e1_logical_end = extent1->start_logical + e1_logical_blocks - 1;
+	logical_gap = (extent2->start_logical - 1) - e1_logical_end;
+
+	sparse = merge_sparse(extent1->sparse, extent2->sparse,
+	                      e1_logical_end + 1, logical_gap,
+			      e1_logical_blocks);
+	if (sparse == NULL && errno != 0)
+		return -1;
+	extent1->sparse = sparse;
+	extent1->end_block = extent2->end_block;
+
+	pos = extent2 - inode->extents;
+	num = inode->extent_count - pos - 1;
+	memmove(extent2, extent2 + 1, num * sizeof(struct data_extent));
+	inode->extent_count--;
+	return 0;
+}
+
+static void inode_remove_from_trees(struct defrag_ctx *c, struct inode *inode)
+{
+	int i;
+	for (i = 0; i < inode->extent_count; i++)
+		rb_remove_data_extent(c, &inode->extents[i]);
+}
+
+int try_extent_merge(struct defrag_ctx *c,
+                     struct inode *inode,
+                     struct data_extent *extent)
+{
+	int oldcount = -1, count = 0, ret;
+	char removed_from_tree = 0;
+
+	while (oldcount != count) {
+		int pos = extent - inode->extents;
+		struct data_extent *prev = inode->extents + pos - 1;
+		struct data_extent *next = inode->extents + pos + 1;
+		oldcount = count;
+		if (pos > 0 && prev->end_block == extent->start_block - 1) {
+			if (!removed_from_tree) {
+				inode_remove_from_trees(c, inode);
+				removed_from_tree = 1;
+			}
+			ret = merge_extents(inode, prev, extent);
+			if (ret < 0) {
+				insert_data_extent(c, prev);
+				break;
+			}
+			count++;
+			extent = prev;
+			pos -= 1;
+		}
+
+		if ((pos + 1) < inode->extent_count
+		    && extent->end_block == next->start_block - 1) {
+			if (!removed_from_tree) {
+				inode_remove_from_trees(c, inode);
+				removed_from_tree = 1;
+			}
+			ret = merge_extents(inode, extent, next);
+			if (ret < 0)
+				break;
+			count++;
+		}
+	}
+
+	if (count) {
+		struct inode *new_inode;
+		ext2_ino_t inode_nr = extent->inode_nr;
+		size_t num_bytes = sizeof(*inode);
+		num_bytes += inode->extent_count * sizeof(*inode->extents);
+
+		new_inode = realloc(inode, num_bytes);
+		/* merge_extents has already consilidated everything to the
+		 * beginning of the inode object */
+		if (new_inode) {
+			c->inodes[inode_nr] = new_inode;
+			inode = new_inode;
+		}
+	}
+
+	if (removed_from_tree) {
+		int i;
+		for (i = 0; i < inode->extent_count; i++)
+			insert_data_extent(c, &inode->extents[i]);
+	}
+	return count;
+}
+
 void add_sparse(struct tmp_extent *extent, blk64_t first_block,
                e2_blkcnt_t nblk, struct obstack *mempool)
 {

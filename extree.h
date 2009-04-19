@@ -6,8 +6,23 @@
 #include <assert.h>
 #include "rbtree.h"
 
-static inline void insert_data_extent(struct defrag_ctx *c,
-                                      struct data_extent *e)
+#ifndef offsetof
+#ifdef __GNUC__
+#define offsetof __builtin_offsetof
+#else
+#define offsetof(type, field) (&((type *)0)->field)
+#endif
+#endif
+
+static inline void rb_remove_data_extent(struct defrag_ctx *c,
+                                         struct data_extent *e)
+{
+	rb_erase(&e->block_rb, &c->extents_by_block);
+	rb_erase(&e->size_rb, &c->extents_by_size);
+}
+
+static inline void insert_data_extent_by_block(struct defrag_ctx *c,
+                                               struct data_extent *e)
 {
 	struct rb_node **p = &c->extents_by_block.rb_node;
 	struct rb_node *parent = NULL;
@@ -26,9 +41,14 @@ static inline void insert_data_extent(struct defrag_ctx *c,
 	}
 	rb_link_node(&e->block_rb, parent, p);
 	rb_insert_color(&e->block_rb, &c->extents_by_block);
+}
 
-	p = &c->extents_by_size.rb_node;
-	parent = NULL;
+static inline void insert_data_extent(struct defrag_ctx *c,
+                                      struct data_extent *e)
+{
+	struct rb_node **p = &c->extents_by_size.rb_node;
+	struct rb_node *parent = NULL;
+	insert_data_extent_by_block(c, e);
 	while (*p) {
 		struct data_extent *extent;
 
