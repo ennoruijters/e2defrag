@@ -74,7 +74,8 @@ struct defrag_ctx *open_drive(char *filename, char read_only)
 	ret->read_only = read_only;
 	ret->extents_by_block = RB_ROOT;
 	ret->extents_by_size = RB_ROOT;
-	ret->free_tree = RB_ROOT;
+	ret->free_tree_by_size = RB_ROOT;
+	ret->free_tree_by_block = RB_ROOT;
 	return ret;
 
 error_alloc:
@@ -185,10 +186,11 @@ void close_drive(struct defrag_ctx *c)
 		free(c->inodes[i]);
 	}
 
-	while (c->free_tree.rb_node) {
+	while (c->free_tree_by_size.rb_node) {
 		struct free_extent *f;
-		f = rb_entry(c->free_tree.rb_node, struct free_extent, node);
-		rb_erase(c->free_tree.rb_node, &c->free_tree);
+		f = rb_entry(c->free_tree_by_size.rb_node,
+		             struct free_extent, size_rb);
+		rb_erase(c->free_tree_by_size.rb_node, &c->free_tree_by_size);
 		free(f);
 	}
 	close(c->fd);

@@ -316,23 +316,31 @@ int move_file_extent(struct defrag_ctx *c, struct inode *i,
 		return -1;
 	}
 	blk_cnt = extent_to_copy->end_block - extent_to_copy->start_block + 1;
-	mark_blocks_used(c, new_start, blk_cnt);
-	ret = __move_block_range(c, extent_to_copy->start_block, new_start,
-	                         blk_cnt);
-	ret = fdatasync(c->fd);
+	ret = allocate_space(c, new_start, blk_cnt);
 	if (ret)
 		return -1;
+	ret = __move_block_range(c, extent_to_copy->start_block, new_start,
+	                         blk_cnt);
+	if (!ret)
+		ret = fdatasync(c->fd);
+	if (ret) {
+		deallocate_space(c, new_start, blk_cnt);
+		return -1;
+	}
 	old_start = extent_to_copy->start_block;
 	extent_to_copy->start_block = new_start;
 	extent_to_copy->end_block = extent_to_copy->start_block + blk_cnt - 1;
 	ret = write_extent_metadata(c, extent_to_copy);
-	if (ret)
-		return -1;
-	mark_blocks_unused(c, old_start, blk_cnt);
-	if (!try_extent_merge(c, i, extent_to_copy)) {
-		rb_erase(&extent_to_copy->block_rb, &c->extents_by_block);
-		insert_data_extent_by_block(c, extent_to_copy);
-		/* Extent size has not changed */
+	if (!ret) {
+		ret = deallocate_space(c, old_start, blk_cnt);
+		if (!try_extent_merge(c, i, extent_to_copy)) {
+			rb_erase(&extent_to_copy->block_rb,
+			         &c->extents_by_block);
+			insert_data_extent_by_block(c, extent_to_copy);
+			/* Extent size has not changed */
+		}
+	} else {
+		/* TODO: graceful error handling */
 	}
-	return 0;
+	return ret;
 }
