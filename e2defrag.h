@@ -77,12 +77,19 @@ void mark_blocks_unused(struct defrag_ctx *c, blk64_t first_block,
 void mark_blocks_used(struct defrag_ctx *c, blk64_t first_block,
                       e2_blkcnt_t count);
 
+/* bmove.c */
+int move_file_extent(struct defrag_ctx *c, struct inode *i,
+                     blk64_t logical_start, blk64_t new_start);
+
 /* debug.c */
 void dump_trees(struct defrag_ctx *c);
 
 /* inode.c */
 long parse_inode(struct defrag_ctx *, ext2_ino_t inode_nr, struct ext2_inode *);
 int try_extent_merge(struct defrag_ctx *, struct inode *, struct data_extent *);
+
+/* interactive.c */
+int move_extent_interactive(struct defrag_ctx *c);
 
 /* io.c */
 struct defrag_ctx *open_drive(char *filename, char read_only);

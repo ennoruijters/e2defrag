@@ -19,7 +19,7 @@ int main(int argc, char *argv[])
 	if (argc < 1)
 		usage();
 	filename = argv[1];
-	disk = open_drive(filename, 1);
+	disk = open_drive(filename, 0);
 	if (!disk) {
 		printf("Error opening drive: %s\n", strerror(errno));
 		return errno;
@@ -33,6 +33,7 @@ int main(int argc, char *argv[])
 #ifndef NDEBUG
 	dump_trees(disk);
 #endif
+	move_extent_interactive(disk);
 	close_drive(disk);
 	return 0;
 }
