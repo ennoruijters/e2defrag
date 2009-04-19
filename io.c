@@ -158,6 +158,7 @@ long parse_inode_table(struct defrag_ctx *c, blk64_t bitmap_block,
 		}
 		bitmap[i / CHAR_BIT] >>= 1;
 	}
+	printf("\n");
 	munmap(bitmap - bitmap_delta_offset, bitmap_length);
 	return count;
 }
@@ -314,20 +315,5 @@ int set_e2_filesystem_data(struct defrag_ctx *c)
 			return -1;
 	}
 
-#if 1 /* EXTENT DISPLAY */
-	struct rb_node *n = rb_first(&c->free_tree);
-	while (n) {
-		struct free_extent *f = rb_entry(n, struct free_extent, node);
-		printf("F: %llu-%llu\n", f->start_block, f->end_block);
-		n = rb_next(n);
-	}
-	n = rb_first(&c->extents_by_block);
-	while (n) {
-		struct data_extent *f = rb_entry(n,struct data_extent,block_rb);
-		printf("U: %llu-%llu(%llu) of %u\n", f->start_block,
-		       f->end_block, f->start_logical, f->inode_nr);
-		n = rb_next(n);
-	}
-#endif
 	return 0;
 }

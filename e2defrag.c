@@ -30,6 +30,9 @@ int main(int argc, char *argv[])
 		printf("Error reading filesystem: %s\n", strerror(errno));
 		return errno;
 	}
+#ifndef NDEBUG
+	dump_trees(disk);
+#endif
 	close_drive(disk);
 	return 0;
 }
