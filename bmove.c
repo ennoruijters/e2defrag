@@ -315,7 +315,7 @@ int move_file_extent(struct defrag_ctx *c, struct inode *i,
 		errno = EINVAL;
 		return -1;
 	}
-	blk_cnt = extent_to_copy->end_block - extent_to_copy->start_block;
+	blk_cnt = extent_to_copy->end_block - extent_to_copy->start_block + 1;
 	mark_blocks_used(c, new_start, blk_cnt);
 	ret = __move_block_range(c, extent_to_copy->start_block, new_start,
 	                         blk_cnt);
@@ -324,7 +324,7 @@ int move_file_extent(struct defrag_ctx *c, struct inode *i,
 		return -1;
 	old_start = extent_to_copy->start_block;
 	extent_to_copy->start_block = new_start;
-	extent_to_copy->end_block = extent_to_copy->start_block + blk_cnt;
+	extent_to_copy->end_block = extent_to_copy->start_block + blk_cnt - 1;
 	ret = write_extent_metadata(c, extent_to_copy);
 	if (ret)
 		return -1;
