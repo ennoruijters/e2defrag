@@ -461,6 +461,9 @@ struct inode *read_inode_blocks(struct defrag_ctx *c, ext2_ino_t inode_nr,
 		else
 			return NULL;
 	}
+	if (nblocks)
+		nblocks -= do_block(&first_extent, &last_extent, &mempool,
+		                    blocks[EXT2_DIND_BLOCK], logical_block);
 	if (nblocks) {
 		long tmp;
 		tmp = do_dind_block(c, &first_extent, &last_extent,
@@ -471,6 +474,9 @@ struct inode *read_inode_blocks(struct defrag_ctx *c, ext2_ino_t inode_nr,
 		else
 			return NULL;
 	}
+	if (nblocks)
+		nblocks -= do_block(&first_extent, &last_extent, &mempool,
+		                    blocks[EXT2_TIND_BLOCK], logical_block);
 	if (nblocks) {
 		long tmp;
 		tmp = do_tind_block(c, &first_extent, &last_extent,
