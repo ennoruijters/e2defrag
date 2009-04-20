@@ -101,7 +101,7 @@ static inline void insert_free_extent(struct defrag_ctx *c,
 		struct free_extent *extent;
 
 		parent = *p;
-		extent = rb_entry(parent, struct free_extent, size_rb);
+		extent = rb_entry(parent, struct free_extent, block_rb);
 
 		if (extent->start_block < e->start_block)
 			p = &(*p)->rb_left;

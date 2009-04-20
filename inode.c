@@ -38,7 +38,7 @@ static struct sparse_extent *merge_sparse(struct sparse_extent *s1,
 
 	errno = 0;
 
-	if (gap_length == 0 && cnt == 0) {
+	if (gap_length == 0 && s2 == NULL) {
 		return s1;
 	} else if (gap_length == 0 && s1 == NULL) {
 		tmp = s2;
@@ -243,7 +243,7 @@ int do_block(struct tmp_extent *first_extent, struct tmp_extent **last_extent,
 		le->e.end_block = block;
 		return 1;
 	} else { /* blocks[i] == 0 */
-		add_sparse(le, block, 1, mempool);
+		add_sparse(le, logical_block, 1, mempool);
 		return 0;
 	}
 }
@@ -432,7 +432,7 @@ struct inode *read_inode_blocks(struct defrag_ctx *c, ext2_ino_t inode_nr,
 	struct inode *ret;
 	struct obstack mempool;
 	__u32 logical_block = 0;
-	__u32 nblocks = inode->i_blocks;
+	__u32 nblocks = inode->i_blocks / EXT2_SECTORS_PER_BLOCK(&c->sb);
 	__u32 *blocks = inode->i_block;
 	int i;
 
@@ -461,9 +461,18 @@ struct inode *read_inode_blocks(struct defrag_ctx *c, ext2_ino_t inode_nr,
 		else
 			return NULL;
 	}
-	if (nblocks)
-		nblocks -= do_block(&first_extent, &last_extent, &mempool,
-		                    blocks[EXT2_DIND_BLOCK], logical_block);
+	if (nblocks) {
+		long ret;
+
+		ret =  do_block(&first_extent, &last_extent, &mempool,
+		                blocks[EXT2_DIND_BLOCK], logical_block);
+		if (ret >= 0) {
+			nblocks -= ret;
+			logical_block += ret;
+		} else {
+			return NULL;
+		}
+	}
 	if (nblocks) {
 		long tmp;
 		tmp = do_dind_block(c, &first_extent, &last_extent,
@@ -474,9 +483,18 @@ struct inode *read_inode_blocks(struct defrag_ctx *c, ext2_ino_t inode_nr,
 		else
 			return NULL;
 	}
-	if (nblocks)
-		nblocks -= do_block(&first_extent, &last_extent, &mempool,
-		                    blocks[EXT2_TIND_BLOCK], logical_block);
+	if (nblocks) {
+		long ret;
+
+		ret =  do_block(&first_extent, &last_extent, &mempool,
+		                blocks[EXT2_TIND_BLOCK], logical_block);
+		if (ret >= 0) {
+			nblocks -= ret;
+			logical_block += ret;
+		} else {
+			return NULL;
+		}
+	}
 	if (nblocks) {
 		long tmp;
 		tmp = do_tind_block(c, &first_extent, &last_extent,

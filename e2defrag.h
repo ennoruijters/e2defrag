@@ -14,10 +14,12 @@ typedef __u32 ext2_ino_t;
 
 /* Logical block numbers of the first-level indirect blocks */
 #define EXT2_IND_LBLOCK(sb)	EXT2_IND_BLOCK
-#define EXT2_DIND_LBLOCK(sb)	(EXT2_DIND_BLOCK + 1 + EXT2_ADDR_PER_BLOCK(sb))
-#define EXT2_TIND_LBLOCK(sb)	(EXT2_TIND_BLOCK + 1 \
+#define EXT2_DIND_LBLOCK(sb)	(EXT2_DIND_BLOCK + EXT2_ADDR_PER_BLOCK(sb))
+#define EXT2_TIND_LBLOCK(sb)	(EXT2_TIND_BLOCK \
                                  + EXT2_ADDR_PER_BLOCK(sb) \
                                    * (EXT2_ADDR_PER_BLOCK(sb) + 1))
+
+#define EXT2_SECTORS_PER_BLOCK(sb) (EXT2_BLOCK_SIZE(sb) / 512)
 
 #define PAGE_START(x) \
 	((void *)(((uintptr_t)(x)) - (((uintptr_t)(x)) % getpagesize())))

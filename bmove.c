@@ -82,9 +82,9 @@ static int write_ind_metadata(struct defrag_ctx *c, struct data_extent *e,
 		return 0;
 	}
 	if (offset > EXT2_TIND_LBLOCK(&c->sb))
-		offset -= EXT2_TIND_LBLOCK(&c->sb) + 1;
+		offset -= EXT2_TIND_LBLOCK(&c->sb) + 2;
 	else if (offset > EXT2_DIND_LBLOCK(&c->sb))
-		offset -= EXT2_DIND_LBLOCK(&c->sb) + 1;
+		offset -= EXT2_DIND_LBLOCK(&c->sb) + 2;
 	else
 		offset -= EXT2_IND_LBLOCK(&c->sb) + 1;
 	offset = offset % blocks_per_dind;
@@ -269,7 +269,7 @@ static int write_extent_metadata(struct defrag_ctx *c, struct data_extent *e)
 	if (cur_logical > EXT2_DIND_LBLOCK(&c->sb)
 	    && cur_logical < EXT2_TIND_LBLOCK(&c->sb)) {
 		write_dind_metadata(c, e,
-		                    inode->on_disk->i_block[EXT2_IND_BLOCK],
+		                    inode->on_disk->i_block[EXT2_DIND_BLOCK],
 				    &cur_logical, &cur_block);
 	}
 	if (cur_logical == EXT2_TIND_LBLOCK(&c->sb)) {
@@ -288,7 +288,7 @@ static int write_extent_metadata(struct defrag_ctx *c, struct data_extent *e)
 	}
 	if (cur_logical > EXT2_TIND_LBLOCK(&c->sb)) {
 		write_tind_metadata(c, e,
-		                    inode->on_disk->i_block[EXT2_IND_BLOCK],
+		                    inode->on_disk->i_block[EXT2_TIND_BLOCK],
 				    &cur_logical, &cur_block);
 	}
 out:
