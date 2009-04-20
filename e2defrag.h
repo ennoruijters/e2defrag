@@ -63,10 +63,13 @@ struct defrag_ctx {
 	struct {
 		struct ext2_inode *map_start;
 		unsigned char *bitmap;
+		struct ext4_group_desc *gd;
 		size_t inode_map_length;
 		size_t bitmap_map_length;
 		off_t bitmap_offset;
 	} *bg_maps;
+	char *gd_map;
+	size_t map_length;
 	int nr_inode_maps;
 	int fd;
 	int read_only;

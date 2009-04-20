@@ -41,6 +41,39 @@ int write_block(struct defrag_ctx *c, void *buf, blk64_t block)
 	return 0;
 }
 
+static int map_gds(struct defrag_ctx *c)
+{
+	int num_block_groups = c->sb.s_blocks_count / c->sb.s_blocks_per_group;
+	if (c->sb.s_blocks_count % c->sb.s_blocks_per_group)
+		num_block_groups++;
+	size_t map_length = num_block_groups * EXT2_DESC_SIZE(&c->sb);
+	off_t map_offset;
+	off_t gd_offset = EXT2_BLOCK_SIZE(&c->sb);
+	int flags, i;
+	if (gd_offset < SUPERBLOCK_OFFSET + SUPERBLOCK_SIZE)
+		gd_offset = SUPERBLOCK_OFFSET + SUPERBLOCK_SIZE;
+	if (gd_offset % getpagesize()) {
+		map_offset = gd_offset % getpagesize();
+		map_length += map_offset;
+		gd_offset -= map_offset;
+	}
+	if (map_length % getpagesize())
+		map_length += getpagesize() - map_length % getpagesize();
+	flags = c->read_only ? MAP_PRIVATE : MAP_SHARED;
+	c->gd_map = mmap(NULL, map_length, PROT_READ | PROT_WRITE, flags,
+	                 c->fd, gd_offset);
+	if (c->gd_map == MAP_FAILED)
+		return -1;
+	c->gd_map += map_offset;
+	c->map_length = map_length;
+
+	for (i = 0; i < num_block_groups; i++) {
+		c->bg_maps[i].gd = (void *)
+		                   (c->gd_map + i * EXT2_DESC_SIZE(&c->sb));
+	}
+	return 0;
+}
+
 struct defrag_ctx *open_drive(char *filename, char read_only)
 {
 	struct defrag_ctx *ret;
@@ -76,8 +109,13 @@ struct defrag_ctx *open_drive(char *filename, char read_only)
 	ret->extents_by_size = RB_ROOT;
 	ret->free_tree_by_size = RB_ROOT;
 	ret->free_tree_by_block = RB_ROOT;
+	tmp = map_gds(ret);
+	if (tmp)
+		goto error_alloc_maps;
 	return ret;
 
+error_alloc_maps:
+	free(ret->bg_maps);
 error_alloc:
 	free(ret);
 error_open:
@@ -185,6 +223,8 @@ void close_drive(struct defrag_ctx *c)
 		}
 		free(c->inodes[i]);
 	}
+	c->gd_map = (char *)((uintptr_t)c->gd_map % getpagesize());
+	munmap(c->gd_map, c->map_length);
 
 	while (c->free_tree_by_size.rb_node) {
 		struct free_extent *f;
@@ -286,17 +326,9 @@ int set_e2_filesystem_data(struct defrag_ctx *c)
 	int num_block_groups = (c->sb.s_blocks_count
 	                        + c->sb.s_blocks_per_group - 1)
 	                       / c->sb.s_blocks_per_group;
-	struct ext2_group_desc gds[num_block_groups];
-	int ret, i;
-	off_t gd_offset = EXT2_BLOCK_SIZE(&c->sb);
-	if (gd_offset < SUPERBLOCK_OFFSET + SUPERBLOCK_SIZE)
-		gd_offset = SUPERBLOCK_OFFSET + SUPERBLOCK_SIZE;
-
-	if (lseek(c->fd, gd_offset, SEEK_SET) == (off_t) -1)
-		return -1;
-	ret = read(c->fd, gds, sizeof(*gds) * num_block_groups);
-	if (ret < sizeof(*gds) * num_block_groups)
-		return -1;
+	struct ext2_group_desc *gds;
+	int i;
+	gds = (struct ext2_group_desc *)c->gd_map;
 
 	for (i = 0; i < num_block_groups; i++) {
 		long ret = 0;
