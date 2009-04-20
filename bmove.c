@@ -344,3 +344,20 @@ int move_file_extent(struct defrag_ctx *c, struct inode *i,
 	}
 	return ret;
 }
+
+int move_file_data(struct defrag_ctx *c, ext2_ino_t inode_nr, blk64_t dest)
+{
+	struct inode *inode = c->inodes[inode_nr];
+	int extent_nr, ret;
+
+	for (extent_nr = 0; extent_nr < inode->extent_count; extent_nr++) {
+		struct data_extent *extent = &inode->extents[extent_nr];
+		ret = move_file_extent(c, inode, extent->start_logical, dest);
+		if (ret)
+			return ret;
+		inode = c->inodes[inode_nr]; /* might have changed */
+		extent = &inode->extents[extent_nr];
+		dest = extent->end_block + 1;
+	}
+	return 0;
+}

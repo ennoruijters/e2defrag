@@ -84,6 +84,7 @@ void mark_blocks_used(struct defrag_ctx *c, blk64_t first_block,
 /* bmove.c */
 int move_file_extent(struct defrag_ctx *c, struct inode *i,
                      blk64_t logical_start, blk64_t new_start);
+int move_file_data(struct defrag_ctx *c, ext2_ino_t inode, blk64_t dest);
 
 /* debug.c */
 void dump_trees(struct defrag_ctx *c);
@@ -98,6 +99,7 @@ int try_extent_merge(struct defrag_ctx *, struct inode *, struct data_extent *);
 
 /* interactive.c */
 int move_extent_interactive(struct defrag_ctx *c);
+int move_file_interactive(struct defrag_ctx *c);
 
 /* io.c */
 struct defrag_ctx *open_drive(char *filename, char read_only);

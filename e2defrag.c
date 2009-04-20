@@ -34,6 +34,7 @@ int main(int argc, char *argv[])
 	dump_trees(disk);
 #endif
 	move_extent_interactive(disk);
+	move_file_interactive(disk);
 	close_drive(disk);
 	return 0;
 }
