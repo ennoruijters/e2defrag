@@ -231,7 +231,8 @@ long parse_free_bitmap(struct defrag_ctx *c, blk64_t bitmap_block,
 	for (i = 0; i < c->sb.s_blocks_per_group; i += CHAR_BIT) {
 		int j;
 		unsigned char mask = 1;
-		if (file_extent && file_extent->end_block > i + CHAR_BIT - 1)
+		if (file_extent
+		    && file_extent->end_block > i + first_block + CHAR_BIT - 1)
 			continue;
 		if (bitmap[i / CHAR_BIT] == 0) {
 			if (!free_extent) {
