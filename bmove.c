@@ -139,6 +139,17 @@ static int write_dind_metadata(struct defrag_ctx *c, struct data_extent *e,
 	ret = read_block(c, buffer, dind_block);
 	if (ret)
 		return -1;
+	if (offset % blocks_per_ind) {
+		offset = offset / blocks_per_ind;
+		ret = write_ind_metadata(c, e, buffer[offset], cur_logical,
+		                         cur_block);
+		if (ret)
+			return ret;
+		offset++;
+		/* Advance to next offset */
+	} else {
+		offset = offset / blocks_per_ind;
+	}
 	while (offset < EXT2_ADDR_PER_BLOCK(&c->sb)) {
 		__u32 new_block;
 		if (*cur_block <= e->end_block) {
@@ -186,10 +197,21 @@ static int write_tind_metadata(struct defrag_ctx *c, struct data_extent *e,
 		*cur_logical += blocks_per_tind;
 		return 0;
 	}
-	offset -= EXT2_TIND_LBLOCK(&c->sb) + 1;
 	ret = read_block(c, buffer, tind_block);
 	if (ret)
 		return -1;
+	offset -= EXT2_TIND_LBLOCK(&c->sb) + 1;
+	offset = offset % blocks_per_tind;
+	if (offset % blocks_per_dind) {
+		offset = offset / blocks_per_dind;
+		ret = write_dind_metadata(c, e, buffer[offset], cur_logical,
+		                         cur_block);
+		if (ret)
+			return ret;
+		offset++;
+	} else {
+		offset = offset / blocks_per_dind;
+	}
 	while (offset < EXT2_ADDR_PER_BLOCK(&c->sb)) {
 		__u32 new_block;
 		if (*cur_block <= e->end_block) {
