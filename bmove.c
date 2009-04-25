@@ -355,13 +355,18 @@ int move_file_extent(struct defrag_ctx *c, struct inode *i,
 	ret = write_extent_metadata(c, extent_to_copy);
 	if (!ret) {
 		ret = deallocate_space(c, old_start, blk_cnt);
-		if (!try_extent_merge(c, i, extent_to_copy)) {
-			rb_erase(&extent_to_copy->block_rb,
-			         &c->extents_by_block);
-			insert_data_extent_by_block(c, extent_to_copy);
-			/* Extent size has not changed */
+		if (!ret) {
+			ret = try_extent_merge(c, i, extent_to_copy);
+			if (!ret) {
+				rb_erase(&extent_to_copy->block_rb,
+				         &c->extents_by_block);
+				insert_data_extent_by_block(c, extent_to_copy);
+				/* Extent size has not changed */
+			}
+			return ret;
 		}
-	} else {
+	}
+	if (ret) {
 		/* TODO: graceful error handling */
 	}
 	return ret;
@@ -375,8 +380,9 @@ int move_file_data(struct defrag_ctx *c, ext2_ino_t inode_nr, blk64_t dest)
 	for (extent_nr = 0; extent_nr < inode->extent_count; extent_nr++) {
 		struct data_extent *extent = &inode->extents[extent_nr];
 		ret = move_file_extent(c, inode, extent->start_logical, dest);
-		if (ret)
+		if (ret < 0)
 			return ret;
+		extent_nr -= ret;
 		inode = c->inodes[inode_nr]; /* might have changed */
 		extent = &inode->extents[extent_nr];
 		dest = extent->end_block + 1;

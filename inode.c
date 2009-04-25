@@ -133,7 +133,7 @@ int try_extent_merge(struct defrag_ctx *c,
                      struct inode *inode,
                      struct data_extent *extent)
 {
-	int oldcount = -1, count = 0, ret;
+	int oldcount = -1, count = 0, downcount = 0, ret;
 	char removed_from_tree = 0;
 
 	while (oldcount != count) {
@@ -153,6 +153,7 @@ int try_extent_merge(struct defrag_ctx *c,
 			}
 			count++;
 			extent = prev;
+			downcount++;
 			pos -= 1;
 		}
 
@@ -189,7 +190,7 @@ int try_extent_merge(struct defrag_ctx *c,
 		for (i = 0; i < inode->extent_count; i++)
 			insert_data_extent(c, &inode->extents[i]);
 	}
-	return count;
+	return downcount;
 }
 
 void add_sparse(struct tmp_extent *extent, blk64_t first_block,
