@@ -45,11 +45,6 @@ static int __move_block_range(struct defrag_ctx *c, blk64_t from, blk64_t to,
 	return 0;
 }
 
-static int __move_data_block(struct defrag_ctx *c, blk64_t from, blk64_t to)
-{
-	return __move_block_range(c, from, to, 1);
-}
-
 static int is_sparse(struct data_extent *e, blk64_t lblock)
 {
 	struct sparse_extent *s = e->sparse;
