@@ -82,7 +82,7 @@ static int write_ind_metadata(struct defrag_ctx *c, struct data_extent *e,
 		return 0;
 	}
 	if (offset > EXT2_TIND_LBLOCK(&c->sb))
-		offset -= EXT2_TIND_LBLOCK(&c->sb) + 2;
+		offset -= EXT2_TIND_LBLOCK(&c->sb) + 3;
 	else if (offset > EXT2_DIND_LBLOCK(&c->sb))
 		offset -= EXT2_DIND_LBLOCK(&c->sb) + 2;
 	else
@@ -132,7 +132,7 @@ static int write_dind_metadata(struct defrag_ctx *c, struct data_extent *e,
 		return 0;
 	}
 	if (offset > EXT2_TIND_LBLOCK(&c->sb))
-		offset -= EXT2_TIND_LBLOCK(&c->sb) + 1;
+		offset -= EXT2_TIND_LBLOCK(&c->sb) + 2;
 	else
 		offset -= EXT2_DIND_LBLOCK(&c->sb) + 1;
 	offset = offset % blocks_per_dind;
@@ -153,9 +153,11 @@ static int write_dind_metadata(struct defrag_ctx *c, struct data_extent *e,
 	while (offset < EXT2_ADDR_PER_BLOCK(&c->sb)) {
 		__u32 new_block;
 		if (*cur_block <= e->end_block) {
-			new_block = is_sparse(e, *cur_logical) ? 0 : *cur_block;
+			if (is_sparse(e, *cur_logical))
+				new_block = 0;
+			else
+				new_block = (*cur_block)++;
 			(*cur_logical)++;
-			(*cur_block)++;
 		} else {
 			new_block = 0;
 		}
@@ -215,9 +217,11 @@ static int write_tind_metadata(struct defrag_ctx *c, struct data_extent *e,
 	while (offset < EXT2_ADDR_PER_BLOCK(&c->sb)) {
 		__u32 new_block;
 		if (*cur_block <= e->end_block) {
-			new_block = is_sparse(e, *cur_logical) ? 0 : *cur_block;
+			if (is_sparse(e, *cur_logical))
+				new_block = 0;
+			else
+				new_block = (*cur_block)++;
 			(*cur_logical)++;
-			(*cur_block)++;
 		} else {
 			new_block = 0;
 		}
@@ -247,73 +251,77 @@ static int write_extent_metadata(struct defrag_ctx *c, struct data_extent *e)
 	struct inode *inode = c->inodes[e->inode_nr];
 	__u32 cur_block = e->start_block;
 	__u32 cur_logical = e->start_logical;
+	__u32 new_block;
 	int sync_inode = 0;
 
-	if (cur_logical <= EXT2_IND_LBLOCK(&c->sb)) {
-		int i;
-		for (i = 0; i <= EXT2_IND_LBLOCK(&c->sb); i++) {
-			if (cur_logical == i) {
-				__u32 new_block;
-				if (!is_sparse(e, cur_logical))
-					new_block = cur_block++;
-				else
-					new_block = 0;
-				if (inode->on_disk->i_block[i] != new_block) {
-					inode->on_disk->i_block[i] = new_block;
-					sync_inode = 1;
-				}
-				if (cur_block > e->end_block)
-					goto out;
-				cur_logical++;
-			}
+	/* Direct blocks */
+	for (; cur_logical < EXT2_IND_LBLOCK(&c->sb); cur_logical++) {
+		if (!is_sparse(e, cur_logical) && cur_block <= e->end_block)
+			new_block = cur_block++;
+		else
+			new_block = 0;
+		if (inode->on_disk->i_block[cur_logical] != new_block) {
+			inode->on_disk->i_block[cur_logical] = new_block;
+			sync_inode = 1;
 		}
+	}
+
+	/* Singly indirect blocks */
+	if (cur_logical == EXT2_IND_LBLOCK(&c->sb)) {
+		if (is_sparse(e, cur_logical) || cur_block > e->end_block)
+			new_block = 0;
+		else
+			new_block = cur_block++;
+		cur_logical++;
+	} else {
+		new_block = inode->on_disk->i_block[EXT2_IND_BLOCK];
 	}
 	if (cur_logical > EXT2_IND_LBLOCK(&c->sb)
 	    && cur_logical < EXT2_DIND_LBLOCK(&c->sb)) {
-		write_ind_metadata(c, e,
-		                   inode->on_disk->i_block[EXT2_IND_BLOCK],
-				   &cur_logical, &cur_block);
+		write_ind_metadata(c, e, new_block, &cur_logical, &cur_block);
 	}
+	if (inode->on_disk->i_block[EXT2_IND_BLOCK] != new_block) {
+		inode->on_disk->i_block[EXT2_IND_BLOCK] = new_block;
+		sync_inode = 1;
+	}
+
+	/* Doubly indirect blocks */
 	if (cur_logical == EXT2_DIND_LBLOCK(&c->sb)) {
-		__u32 new_block;
-		if (!is_sparse(e, cur_logical))
-			new_block = cur_block++;
-		else
+		if (is_sparse(e, cur_logical) || cur_block > e->end_block)
 			new_block = 0;
-		if (inode->on_disk->i_block[EXT2_DIND_BLOCK] != new_block) {
-			inode->on_disk->i_block[EXT2_DIND_BLOCK] = new_block;
-			sync_inode = 1;
-		}
-		if (cur_block > e->end_block)
-			goto out;
+		else
+			new_block = cur_block++;
 		cur_logical++;
+	} else {
+		new_block = inode->on_disk->i_block[EXT2_DIND_BLOCK];
 	}
 	if (cur_logical > EXT2_DIND_LBLOCK(&c->sb)
 	    && cur_logical < EXT2_TIND_LBLOCK(&c->sb)) {
-		write_dind_metadata(c, e,
-		                    inode->on_disk->i_block[EXT2_DIND_BLOCK],
-				    &cur_logical, &cur_block);
+		write_dind_metadata(c, e, new_block, &cur_logical, &cur_block);
 	}
+	if (inode->on_disk->i_block[EXT2_DIND_BLOCK] != new_block) {
+		inode->on_disk->i_block[EXT2_DIND_BLOCK] = new_block;
+		sync_inode = 1;
+	}
+
+	/* Triply indirect blocks */
 	if (cur_logical == EXT2_TIND_LBLOCK(&c->sb)) {
-		__u32 new_block;
-		if (!is_sparse(e, cur_logical))
-			new_block = cur_block++;
-		else
+		if (is_sparse(e, cur_logical) || cur_block > e->end_block)
 			new_block = 0;
-		if (inode->on_disk->i_block[EXT2_TIND_BLOCK] != new_block) {
-			inode->on_disk->i_block[EXT2_TIND_BLOCK] = new_block;
-			sync_inode = 1;
-		}
-		if (cur_block > e->end_block)
-			goto out;
+		else
+			new_block = cur_block++;
 		cur_logical++;
+	} else {
+		new_block = inode->on_disk->i_block[EXT2_TIND_BLOCK];
 	}
 	if (cur_logical > EXT2_TIND_LBLOCK(&c->sb)) {
-		write_tind_metadata(c, e,
-		                    inode->on_disk->i_block[EXT2_TIND_BLOCK],
-				    &cur_logical, &cur_block);
+		write_tind_metadata(c, e, new_block, &cur_logical, &cur_block);
 	}
-out:
+	if (inode->on_disk->i_block[EXT2_TIND_BLOCK] != new_block) {
+		inode->on_disk->i_block[EXT2_TIND_BLOCK] = new_block;
+		sync_inode = 1;
+	}
+
 	if (sync_inode)
 		/* Assumes the inode is completely within one page */
 		msync(PAGE_START(inode->on_disk), getpagesize(), MS_SYNC);
@@ -376,9 +384,33 @@ int move_file_data(struct defrag_ctx *c, ext2_ino_t inode_nr, blk64_t dest)
 {
 	struct inode *inode = c->inodes[inode_nr];
 	int extent_nr, ret;
+	blk64_t next_dest = dest;
 
 	for (extent_nr = 0; extent_nr < inode->extent_count; extent_nr++) {
 		struct data_extent *extent = &inode->extents[extent_nr];
+		struct free_extent *free_extent, *next_extent;
+		blk64_t end_block;
+		dest = next_dest;
+		free_extent = containing_free_extent(c, dest);
+		if (!free_extent) {
+			errno = EINVAL;
+			return -1;
+		}
+		if (rb_next(&free_extent->block_rb) != NULL) {
+			next_extent = rb_entry(rb_next(&free_extent->block_rb),
+			                       struct free_extent, block_rb);
+			next_dest = next_extent->start_block;
+		}
+		end_block = dest + (extent->end_block - extent->start_block);
+		if (end_block > free_extent->end_block) {
+			blk64_t new_end_block = extent->start_block
+			                      + (free_extent->end_block - dest);
+			ret = split_extent(c, inode, extent, new_end_block);
+			if (ret < 0)
+				return ret;
+			inode = c->inodes[inode_nr]; /* might have changed */
+			extent = &inode->extents[extent_nr];
+		}
 		ret = move_file_extent(c, inode, extent->start_logical, dest);
 		if (ret < 0)
 			return ret;
