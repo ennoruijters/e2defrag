@@ -90,13 +90,11 @@ static int write_ind_metadata(struct defrag_ctx *c, struct data_extent *e,
 	while (offset < EXT2_ADDR_PER_BLOCK(&c->sb)
 	       && *cur_block <= e->end_block) {
 		__u32 new_block;
-		if (*cur_block <= e->end_block) {
-			new_block = is_sparse(e, *cur_logical) ? 0 : *cur_block;
-			(*cur_block)++;
-			(*cur_logical)++;
-		} else {
+		if (is_sparse(e, *cur_logical))
 			new_block = 0;
-		}
+		else
+			new_block = (*cur_block)++;
+		(*cur_logical)++;
 		if (buffer[offset] != new_block) {
 			to_sync = 1;
 			buffer[offset] = new_block;
@@ -145,17 +143,14 @@ static int write_dind_metadata(struct defrag_ctx *c, struct data_extent *e,
 	} else {
 		offset = offset / blocks_per_ind;
 	}
-	while (offset < EXT2_ADDR_PER_BLOCK(&c->sb)) {
+	while (offset < EXT2_ADDR_PER_BLOCK(&c->sb)
+	                                        && *cur_block <= e->end_block) {
 		__u32 new_block;
-		if (*cur_block <= e->end_block) {
-			if (is_sparse(e, *cur_logical))
-				new_block = 0;
-			else
-				new_block = (*cur_block)++;
-			(*cur_logical)++;
-		} else {
+		if (is_sparse(e, *cur_logical))
 			new_block = 0;
-		}
+		else
+			new_block = (*cur_block)++;
+		(*cur_logical)++;
 		if (new_block) {
 			ret = write_ind_metadata(c, e, new_block,
 			                         cur_logical, cur_block);
@@ -209,17 +204,14 @@ static int write_tind_metadata(struct defrag_ctx *c, struct data_extent *e,
 	} else {
 		offset = offset / blocks_per_dind;
 	}
-	while (offset < EXT2_ADDR_PER_BLOCK(&c->sb)) {
+	while (offset < EXT2_ADDR_PER_BLOCK(&c->sb)
+	                                        && *cur_block <= e->end_block) {
 		__u32 new_block;
-		if (*cur_block <= e->end_block) {
-			if (is_sparse(e, *cur_logical))
-				new_block = 0;
-			else
-				new_block = (*cur_block)++;
-			(*cur_logical)++;
-		} else {
+		if (is_sparse(e, *cur_logical))
 			new_block = 0;
-		}
+		else
+			new_block = (*cur_block)++;
+		(*cur_logical)++;
 		if (new_block) {
 			ret = write_dind_metadata(c, e, new_block,
 			                          cur_logical, cur_block);
