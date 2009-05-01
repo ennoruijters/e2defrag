@@ -31,7 +31,7 @@ int main(int argc, char *argv[])
 		return errno;
 	}
 #ifndef NDEBUG
-	dump_trees(disk);
+	dump_trees(disk, 3);
 #endif
 	move_extent_interactive(disk);
 	move_file_interactive(disk);

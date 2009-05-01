@@ -35,6 +35,32 @@ int allocate_space(struct defrag_ctx *c,
 	return 0;
 }
 
+/* extent should not be in the free extent list.
+ * extent may be freed if merged.
+ * The returned structure will not be in the free extent list.
+ */
+static struct free_extent *try_merge(struct defrag_ctx *c,
+                                     struct free_extent *extent)
+{
+	struct free_extent *other_extent;
+
+	other_extent = containing_free_extent(c, extent->start_block - 1);
+	if (other_extent) {
+		rb_remove_free_extent(c, other_extent);
+		other_extent->end_block = extent->end_block;
+		free(extent);
+		extent = other_extent;
+	}
+	other_extent = containing_free_extent(c, extent->end_block + 1);
+	if (other_extent) {
+		rb_remove_free_extent(c, other_extent);
+		other_extent->start_block = extent->start_block;
+		free(extent);
+		extent = other_extent;
+	}
+	return extent;
+}
+
 int deallocate_space(struct defrag_ctx *c, blk64_t start, e2_blkcnt_t numblocks)
 {
 	struct free_extent *extent;
@@ -42,9 +68,15 @@ int deallocate_space(struct defrag_ctx *c, blk64_t start, e2_blkcnt_t numblocks)
 	if ((extent = containing_free_extent(c, start - 1)) != NULL) {
 		rb_remove_free_extent(c, extent);
 		extent->end_block = start + numblocks - 1;
+		extent = try_merge(c, extent);
+		if (extent == NULL)
+			return -1;
 	} else if ((extent = containing_free_extent(c, start + numblocks))) {
 		rb_remove_free_extent(c, extent);
 		extent->start_block = start;
+		extent = try_merge(c, extent);
+		if (extent == NULL)
+			return -1;
 	} else {
 		extent = malloc(sizeof *extent);
 		if (extent == NULL)

@@ -90,7 +90,7 @@ int move_file_extent(struct defrag_ctx *c, struct inode *i,
 int move_file_data(struct defrag_ctx *c, ext2_ino_t inode, blk64_t dest);
 
 /* debug.c */
-void dump_trees(struct defrag_ctx *c);
+void dump_trees(struct defrag_ctx *c, int to_dump);
 
 /* freespace.c */
 int allocate_space(struct defrag_ctx *c, blk64_t start, e2_blkcnt_t numblocks);
