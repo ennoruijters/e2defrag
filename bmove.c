@@ -371,31 +371,18 @@ int move_file_extent(struct defrag_ctx *c, struct inode *i,
 int move_file_data(struct defrag_ctx *c, ext2_ino_t inode_nr, blk64_t dest)
 {
 	struct inode *inode = c->inodes[inode_nr];
+	struct free_extent *free_extent;
 	int extent_nr, ret;
-	blk64_t next_dest = dest;
+	free_extent = containing_free_extent(c, dest);
 
 	for (extent_nr = 0; extent_nr < inode->extent_count; extent_nr++) {
 		struct data_extent *extent = &inode->extents[extent_nr];
-		struct free_extent *free_extent, *next_extent;
 		blk64_t end_block;
-		dest = next_dest;
-		if (!dest) {
+		if (!free_extent) {
 			printf("A malfunction has occured: tried to write past "
 			       "end of disk\n");
 			errno = ENOENT;
 			return -1;
-		}
-		free_extent = containing_free_extent(c, dest);
-		if (!free_extent) {
-			errno = EINVAL;
-			return -1;
-		}
-		if (rb_next(&free_extent->block_rb) != NULL) {
-			next_extent = rb_entry(rb_next(&free_extent->block_rb),
-			                       struct free_extent, block_rb);
-			next_dest = next_extent->start_block;
-		} else {
-			next_dest = 0;
 		}
 		end_block = dest + (extent->end_block - extent->start_block);
 		if (end_block > free_extent->end_block) {
@@ -414,6 +401,12 @@ int move_file_data(struct defrag_ctx *c, ext2_ino_t inode_nr, blk64_t dest)
 		inode = c->inodes[inode_nr]; /* might have changed */
 		extent = &inode->extents[extent_nr];
 		dest = extent->end_block + 1;
+		if (extent_nr + 1 < inode->extent_count) {
+			free_extent = free_extent_after(c, dest);
+			if (free_extent) {
+				dest = free_extent->start_block;
+			}
+		}
 	}
 	return 0;
 }

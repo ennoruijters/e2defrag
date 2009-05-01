@@ -146,4 +146,23 @@ static inline struct free_extent *containing_free_extent(struct defrag_ctx *c,
 	return NULL;
 }
 
+static inline struct free_extent *free_extent_after(struct defrag_ctx *c,
+                                                    blk64_t block)
+{
+	struct free_extent *ret = NULL;
+	struct rb_node *current = c->free_tree_by_block.rb_node;
+	while (current) {
+		struct free_extent *e;
+		e = rb_entry(current, struct free_extent, block_rb);
+		if (block > e->start_block) {
+			current = current->rb_right;
+		} else {
+			if (ret == NULL || ret->start_block > e->start_block)
+				ret = e;
+			current = current->rb_left;
+		}
+	}
+	return ret;
+}
+
 #endif
