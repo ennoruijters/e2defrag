@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <sys/mman.h>
+#include <stdio.h>
 #include "e2defrag.h"
 #include "extree.h"
 
@@ -378,6 +379,12 @@ int move_file_data(struct defrag_ctx *c, ext2_ino_t inode_nr, blk64_t dest)
 		struct free_extent *free_extent, *next_extent;
 		blk64_t end_block;
 		dest = next_dest;
+		if (!dest) {
+			printf("A malfunction has occured: tried to write past "
+			       "end of disk\n");
+			errno = ENOENT;
+			return -1;
+		}
 		free_extent = containing_free_extent(c, dest);
 		if (!free_extent) {
 			errno = EINVAL;
@@ -387,6 +394,8 @@ int move_file_data(struct defrag_ctx *c, ext2_ino_t inode_nr, blk64_t dest)
 			next_extent = rb_entry(rb_next(&free_extent->block_rb),
 			                       struct free_extent, block_rb);
 			next_dest = next_extent->start_block;
+		} else {
+			next_dest = 0;
 		}
 		end_block = dest + (extent->end_block - extent->start_block);
 		if (end_block > free_extent->end_block) {
