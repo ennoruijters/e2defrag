@@ -575,7 +575,7 @@ struct inode *read_inode_blocks(struct defrag_ctx *c, ext2_ino_t inode_nr,
 		if (ret != NULL) {
 			ret->block_count = nblocks;
 			ret->extent_count = 0;
-			ret->on_disk = inode;
+			ret->on_disk = (union on_disk_block *)inode->i_block;
 		}
 		return ret;
 	}
@@ -641,7 +641,7 @@ struct inode *read_inode_blocks(struct defrag_ctx *c, ext2_ino_t inode_nr,
 	}
 	ret = make_inode_extents(c, &first_extent, inode_nr, logical_block);
 	if (ret)
-		ret->on_disk = inode;
+		ret->on_disk = (union on_disk_block *)inode->i_block;
 	obstack_free(&mempool, NULL);
 	return ret;
 }

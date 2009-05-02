@@ -2,6 +2,7 @@
 #define E2DEFRAG_H
 
 #include <ext2fs/ext2_fs.h>
+#include <ext2fs/ext3_extents.h>
 #include <stdint.h>
 #include "rbtree.h"
 
@@ -50,7 +51,17 @@ struct free_extent {
 struct inode {
 	e2_blkcnt_t block_count;
 	e2_blkcnt_t extent_count;
-	struct ext2_inode *on_disk; /* We don't care about the extended part */
+	union on_disk_block {
+		__u32 i_block[EXT2_N_BLOCKS];
+		struct {
+			struct ext3_extent_header hdr;
+			union {
+				struct ext3_extent leaf;
+				struct ext3_extent_idx index;
+			} extent[4];
+		} extents;
+	} *on_disk;
+	int uses_extents : 1;
 	struct data_extent extents[];
 };
 
@@ -112,5 +123,8 @@ int read_block(struct defrag_ctx *c, void *buf, blk64_t block);
 int write_block(struct defrag_ctx *c, void *buf, blk64_t block);
 int set_e2_filesystem_data(struct defrag_ctx *c);
 void close_drive(struct defrag_ctx *c);
+
+/* metadata_writeback.c */
+int write_extent_metadata(struct defrag_ctx *c, struct data_extent *e);
 
 #endif
