@@ -108,7 +108,6 @@ int allocate_space(struct defrag_ctx *c, blk64_t start, e2_blkcnt_t numblocks);
 int deallocate_space(struct defrag_ctx *c, blk64_t start, e2_blkcnt_t num);
 
 /* inode.c */
-long parse_inode(struct defrag_ctx *, ext2_ino_t inode_nr, struct ext2_inode *);
 int try_extent_merge(struct defrag_ctx *, struct inode *, struct data_extent *);
 int split_extent(struct defrag_ctx *c, struct inode *inode,
                  struct data_extent *extent, blk64_t new_end_block);
@@ -126,5 +125,9 @@ void close_drive(struct defrag_ctx *c);
 
 /* metadata_writeback.c */
 int write_extent_metadata(struct defrag_ctx *c, struct data_extent *e);
+
+/* metadata_read.c */
+long parse_inode(struct defrag_ctx *c, ext2_ino_t inode_nr,
+                 struct ext2_inode *inode);
 
 #endif
