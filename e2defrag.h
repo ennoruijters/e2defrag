@@ -51,6 +51,7 @@ struct free_extent {
 struct inode {
 	e2_blkcnt_t block_count;
 	e2_blkcnt_t extent_count;
+	e2_blkcnt_t num_extent_index_blocks; /* if 0: uses direct addressing */
 	union on_disk_block {
 		__u32 i_block[EXT2_N_BLOCKS];
 		struct {
@@ -61,7 +62,6 @@ struct inode {
 			} extent[4];
 		} extents;
 	} *on_disk;
-	int uses_extents : 1;
 	struct data_extent extents[];
 };
 

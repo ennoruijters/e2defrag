@@ -283,7 +283,7 @@ int write_extent_metadata(struct defrag_ctx *c, struct data_extent *e)
 {
 	struct inode *inode = c->inodes[e->inode_nr];
 
-	if (inode->uses_extents) {
+	if (inode->num_extent_index_blocks) {
 		errno = EINVAL;
 		return -1;
 	} else {

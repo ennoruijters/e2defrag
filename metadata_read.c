@@ -15,6 +15,9 @@
 const __u32 KNOWN_INODE_FLAGS_MASK = 0x000FFFFFU;
 #define EXT2_SECTORS_PER_BLOCK(sb) (EXT2_BLOCK_SIZE(sb) / 512)
 
+#define EE_BLOCK(extent) (((blk64_t)((extent)->ee_start_hi) << 16) + ((extent)->ee_start))
+#define EI_BLOCK(extent) (((blk64_t)((extent)->ei_leaf_hi) << 16) + ((extent)->ei_leaf))
+
 struct tmp_sparse {
 	struct sparse_extent s;
 	struct tmp_sparse *next;
@@ -221,8 +224,7 @@ static struct sparse_extent *get_sparse_array(struct tmp_extent *extent,
 
 static struct inode *make_inode_extents(struct defrag_ctx *c,
                                         struct tmp_extent *extent,
-					ext2_ino_t inode_nr,
-                                        blk64_t last_logical_block)
+					ext2_ino_t inode_nr)
 {
 	struct tmp_extent *tmp = extent;
 	struct inode *ret;
@@ -237,23 +239,158 @@ static struct inode *make_inode_extents(struct defrag_ctx *c,
 		return NULL;
 	ret->block_count = 0;
 	ret->extent_count = i;
+	ret->num_extent_index_blocks = 0;
 	for (i = 0, tmp = extent; tmp != NULL; i++, tmp = tmp->next) {
-		blk64_t next_logical;
 		ret->extents[i].start_block = tmp->e.start_block;
 		ret->extents[i].end_block = tmp->e.end_block;
 		ret->extents[i].inode_nr = inode_nr;
 		ret->block_count += tmp->e.end_block - tmp->e.start_block + 1;
 		ret->extents[i].start_logical = tmp->e.start_logical;
-		if (tmp == NULL || tmp->next == NULL)
-			next_logical = last_logical_block;
-		else
+		if (tmp->next != NULL) {
+			blk64_t next_logical;
 			next_logical = tmp->next->e.start_logical;
-		ret->extents[i].sparse = get_sparse_array(tmp, next_logical);
+			ret->extents[i].sparse = get_sparse_array(tmp,
+			                                          next_logical);
+		} else {
+			ret->extents[i].sparse = NULL;
+		}
 		insert_data_extent(c, ret->extents + i);
 	}
 	return ret;
 }
 
+static int read_extent_leaf(struct tmp_extent *first_extent,
+                            struct tmp_extent **last_extent,
+                            struct obstack *mempool,
+			    struct ext3_extent_header *header)
+{
+	struct ext3_extent *extents = (struct ext3_extent *)(header + 1);
+	int i, ret;
+
+	if (header->eh_magic != EXT3_EXT_MAGIC) {
+		printf("Inode has unknown type of extents, ignoring.");
+		return 0;
+	}
+	for (i = 0; i < header->eh_entries; i++) {
+		printf("Adding %u from %llu\n", extents[i].ee_len,
+		       EE_BLOCK(&extents[i]));
+		ret = do_blocks(first_extent, last_extent, mempool,
+		                EE_BLOCK(&extents[i]), extents[i].ee_block,
+				extents[i].ee_len);
+		if (ret < 0)
+			return ret;
+	}
+	return 0;
+}
+
+static int read_extent_index(struct defrag_ctx *c,
+                             struct tmp_extent *first_extent,
+                             struct tmp_extent **last_extent,
+                             struct obstack *mempool,
+			     struct ext3_extent_header *header,
+                             e2_blkcnt_t *metadata_only)
+{
+	struct ext3_extent_idx *extents = (struct ext3_extent_idx *)(header+1);
+	int i, ret;
+	if (header->eh_magic != EXT3_EXT_MAGIC) {
+		printf("Inode has unknown type of extents, ignoring.");
+		return 0;
+	}
+	printf("New index, depth %u\n", header->eh_depth);
+	for (i = 0; i < header->eh_entries; i++) {
+		unsigned char buffer[EXT2_BLOCK_SIZE(&c->sb)];
+		struct ext3_extent_header *new_header = (void *)buffer;
+		if (metadata_only) {
+			printf("Adding metadata block %llu (%llu)\n",
+			       EI_BLOCK(&extents[i]), *metadata_only);
+			ret = do_blocks(first_extent, last_extent, mempool,
+			                EI_BLOCK(&extents[i]),
+			                (*metadata_only)++, 1);
+			if (ret < 0)
+				return ret;
+		}
+		ret = read_block(c, buffer, EI_BLOCK(&extents[i]));
+		if (ret < 0)
+			return ret;
+		if (new_header->eh_depth == 0 && !metadata_only)
+			ret = read_extent_leaf(first_extent, last_extent,
+			                       mempool, new_header);
+		else if (new_header->eh_depth > 0) {
+			ret = read_extent_index(c, first_extent, last_extent,
+			                        mempool, new_header,
+			                        metadata_only);
+		}
+		if (ret < 0)
+			return ret;
+	}
+	return 0;
+}
+
+static struct inode *read_inode_extents(struct defrag_ctx *c,
+                                        ext2_ino_t inode_nr,
+                                        struct ext2_inode *inode)
+{
+	struct ext3_extent_header *header;
+	struct tmp_extent first_data_extent = {
+		.s = NULL,
+		.last_sparse = NULL,
+		.next = NULL
+	};
+	struct tmp_extent first_metadata_extent = {
+		.s = NULL,
+		.last_sparse = NULL,
+		.next = NULL
+	};
+	struct tmp_extent *last_extent = NULL;
+	struct inode *ret;
+	struct obstack mempool;
+	e2_blkcnt_t num_metadata_blocks = 0;
+	header = (struct ext3_extent_header *) inode->i_block;
+
+	obstack_init(&mempool);
+
+	if (header->eh_depth == 0) {
+		int ret;
+		ret = read_extent_leaf(&first_data_extent, &last_extent,
+		                       &mempool, header);
+		if (ret < 0)
+			return NULL;
+	} else {
+		int ret;
+		ret = read_extent_index(c, &first_data_extent, &last_extent,
+		                        &mempool, header, NULL);
+		if (ret < 0)
+			return NULL;
+		last_extent = NULL;
+		ret = read_extent_index(c, &first_metadata_extent, &last_extent,
+		                        &mempool, header, &num_metadata_blocks);
+		if (ret < 0)
+			return NULL;
+		if (last_extent == NULL) {
+			printf("Internal error: expected at least one metadata"
+			       "extent.");
+			errno = EINVAL;
+			return NULL;
+		}
+		last_extent->next = &first_data_extent;
+		last_extent = &first_data_extent;
+		while (last_extent) {
+			last_extent->e.start_logical += num_metadata_blocks;
+			last_extent = last_extent->next;
+		}
+	}
+
+	if (num_metadata_blocks)
+		ret = make_inode_extents(c, &first_metadata_extent, inode_nr);
+	else
+		ret = make_inode_extents(c, &first_data_extent, inode_nr);
+	if (ret) {
+		ret->on_disk = (union on_disk_block *)inode->i_block;
+		ret->num_extent_index_blocks = num_metadata_blocks;
+	}
+	obstack_free(&mempool, NULL);
+	return ret;
+}
 static struct inode *read_inode_blocks(struct defrag_ctx *c,
                                        ext2_ino_t inode_nr,
                                        struct ext2_inode *inode)
@@ -271,15 +408,6 @@ static struct inode *read_inode_blocks(struct defrag_ctx *c,
 	__u32 *blocks = inode->i_block;
 	int i;
 
-	if (nblocks == 0) {
-		ret = malloc(sizeof(struct inode));
-		if (ret != NULL) {
-			ret->block_count = nblocks;
-			ret->extent_count = 0;
-			ret->on_disk = (union on_disk_block *)inode->i_block;
-		}
-		return ret;
-	}
 	obstack_init(&mempool);
 
 	for (i = 0; i <= EXT2_NDIR_BLOCKS && nblocks; i++, logical_block++) {
@@ -340,7 +468,7 @@ static struct inode *read_inode_blocks(struct defrag_ctx *c,
 		else
 			return NULL;
 	}
-	ret = make_inode_extents(c, &first_extent, inode_nr, logical_block);
+	ret = make_inode_extents(c, &first_extent, inode_nr);
 	if (ret)
 		ret->on_disk = (union on_disk_block *)inode->i_block;
 	obstack_free(&mempool, NULL);
@@ -350,6 +478,16 @@ static struct inode *read_inode_blocks(struct defrag_ctx *c,
 long parse_inode(struct defrag_ctx *c, ext2_ino_t inode_nr,
                  struct ext2_inode *inode)
 {
+	if (inode->i_blocks == 0) {
+		c->inodes[inode_nr] = malloc(sizeof(struct inode));
+		if (c->inodes[inode_nr] != NULL) {
+			c->inodes[inode_nr]->block_count = 0;
+			c->inodes[inode_nr]->extent_count = 0;
+			c->inodes[inode_nr]->on_disk =
+			                  (union on_disk_block *)inode->i_block;
+		}
+		return 0;
+	}
 	if (inode_nr < EXT2_FIRST_INO(&c->sb)) {
 		if (inode_nr != EXT2_ROOT_INO) {
 			c->inodes[inode_nr] = NULL;
@@ -364,10 +502,11 @@ long parse_inode(struct defrag_ctx *c, ext2_ino_t inode_nr,
 		return 0;
 	}
 	if (inode->i_flags & EXT4_EXTENTS_FL) {
-		printf("Inode %u uses extents. I don't know how to handle "
-		       "those, so I'm ignoring it.\n", inode_nr);
-		c->inodes[inode_nr] = NULL;
-		return 0;
+		c->inodes[inode_nr] = read_inode_extents(c, inode_nr, inode);
+		if (c->inodes[inode_nr] == NULL)
+			return -1;
+		else
+			return 0;
 	} else {
 		e2_blkcnt_t blocks;
 		blocks = inode->i_blocks / EXT2_SECTORS_PER_BLOCK(&c->sb);
