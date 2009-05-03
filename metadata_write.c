@@ -283,7 +283,8 @@ int write_extent_metadata(struct defrag_ctx *c, struct data_extent *e)
 {
 	struct inode *inode = c->inodes[e->inode_nr];
 
-	if (inode->num_extent_index_blocks) {
+	if (inode->metadata) {
+		printf("Cannot yet write extent-based inodes\n");
 		errno = EINVAL;
 		return -1;
 	} else {

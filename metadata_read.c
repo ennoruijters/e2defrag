@@ -239,7 +239,7 @@ static struct inode *make_inode_extents(struct defrag_ctx *c,
 		return NULL;
 	ret->block_count = 0;
 	ret->extent_count = i;
-	ret->num_extent_index_blocks = 0;
+	ret->metadata = NULL;
 	for (i = 0, tmp = extent; tmp != NULL; i++, tmp = tmp->next) {
 		ret->extents[i].start_block = tmp->e.start_block;
 		ret->extents[i].end_block = tmp->e.end_block;
@@ -331,12 +331,8 @@ static struct inode *read_inode_extents(struct defrag_ctx *c,
                                         struct ext2_inode *inode)
 {
 	struct ext3_extent_header *header;
-	struct tmp_extent first_data_extent = {
-		.s = NULL,
-		.last_sparse = NULL,
-		.next = NULL
-	};
-	struct tmp_extent first_metadata_extent = {
+	struct tmp_extent first_extent = {
+		.e = {0, 0, 0, NULL, 0},
 		.s = NULL,
 		.last_sparse = NULL,
 		.next = NULL
@@ -350,46 +346,77 @@ static struct inode *read_inode_extents(struct defrag_ctx *c,
 	obstack_init(&mempool);
 
 	if (header->eh_depth == 0) {
-		int ret;
-		ret = read_extent_leaf(&first_data_extent, &last_extent,
+		int tmp;
+		tmp = read_extent_leaf(&first_extent, &last_extent,
 		                       &mempool, header);
-		if (ret < 0)
-			return NULL;
-	} else {
-		int ret;
-		ret = read_extent_index(c, &first_data_extent, &last_extent,
-		                        &mempool, header, NULL);
-		if (ret < 0)
-			return NULL;
-		last_extent = NULL;
-		ret = read_extent_index(c, &first_metadata_extent, &last_extent,
-		                        &mempool, header, &num_metadata_blocks);
-		if (ret < 0)
-			return NULL;
-		if (last_extent == NULL) {
-			printf("Internal error: expected at least one metadata"
-			       "extent.");
-			errno = EINVAL;
-			return NULL;
+		if (tmp < 0)
+			goto out_error;
+		ret = make_inode_extents(c, &first_extent, inode_nr);
+		if (ret) {
+			ret->on_disk = (union on_disk_block *)inode->i_block;
+			ret->metadata = malloc(sizeof(*ret->metadata));
+			if (!ret->metadata) {
+				free(ret);
+				goto out_error;
+			}
+			ret->metadata->block_count = 0;
+			ret->metadata->extent_count = 0;
 		}
-		last_extent->next = &first_data_extent;
-		last_extent = &first_data_extent;
-		while (last_extent) {
-			last_extent->e.start_logical += num_metadata_blocks;
-			last_extent = last_extent->next;
+	} else {
+		int tmp;
+		tmp = read_extent_index(c, &first_extent, &last_extent,
+		                        &mempool, header, NULL);
+		if (tmp < 0)
+			goto out_error;
+		ret = make_inode_extents(c, &first_extent, inode_nr);
+		if (ret) {
+			e2_blkcnt_t num_extents = 0, i;
+			ret->on_disk = (union on_disk_block *)inode->i_block;
+			first_extent.s = NULL;
+			first_extent.e.start_block = 0;
+			first_extent.e.end_block = 0;
+			first_extent.e.start_logical = 0;
+			first_extent.e.sparse = NULL;
+			first_extent.next = NULL;
+			first_extent.last_sparse = NULL;
+			last_extent = NULL;
+			tmp = read_extent_index(c, &first_extent, &last_extent,
+			                        &mempool, header,
+			                        &num_metadata_blocks);
+			if (tmp < 0) {
+				free(ret);
+				goto out_error;
+			}
+			last_extent = &first_extent;
+			while (last_extent) {
+				num_extents++;
+				last_extent = last_extent->next;
+			}
+			ret->metadata = malloc(sizeof(*ret->metadata)
+			                       + num_extents
+			                          * sizeof(struct data_extent));
+			if (!ret->metadata) {
+				free(ret);
+				goto out_error;
+			}
+			ret->metadata->block_count = num_metadata_blocks;
+			ret->metadata->extent_count = num_extents;
+			last_extent = &first_extent;
+			for (i = 0; i < num_extents; i++) {
+				ret->metadata->extents[i] = last_extent->e;
+				ret->metadata->extents[i].inode_nr = inode_nr;
+				last_extent = last_extent->next;
+				insert_data_extent(c,ret->metadata->extents +i);
+			}
 		}
 	}
 
-	if (num_metadata_blocks)
-		ret = make_inode_extents(c, &first_metadata_extent, inode_nr);
-	else
-		ret = make_inode_extents(c, &first_data_extent, inode_nr);
-	if (ret) {
-		ret->on_disk = (union on_disk_block *)inode->i_block;
-		ret->num_extent_index_blocks = num_metadata_blocks;
-	}
 	obstack_free(&mempool, NULL);
 	return ret;
+
+out_error:
+	obstack_free(&mempool, NULL);
+	return NULL;
 }
 static struct inode *read_inode_blocks(struct defrag_ctx *c,
                                        ext2_ino_t inode_nr,
