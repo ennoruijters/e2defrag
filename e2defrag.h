@@ -48,15 +48,16 @@ struct free_extent {
 	struct rb_node size_rb;
 };
 
+struct allocation {
+	e2_blkcnt_t block_count;
+	e2_blkcnt_t extent_count;
+	struct data_extent extents[];
+};
+
 struct inode {
 	e2_blkcnt_t block_count; /* Excludes any extent tree blocks */
 	e2_blkcnt_t extent_count; /* Excludes any extent tree extents */
-	struct {
-		e2_blkcnt_t block_count;
-		e2_blkcnt_t extent_count;
-		struct data_extent extents[];
-	} *metadata;
-	/* If NULL: inode uses direct addressing */
+	struct allocation *metadata; /* If NULL: inode uses direct addressing */
 	union on_disk_block {
 		__u32 i_block[EXT2_N_BLOCKS];
 		struct {
@@ -111,6 +112,9 @@ void dump_trees(struct defrag_ctx *c, int to_dump);
 /* freespace.c */
 int allocate_space(struct defrag_ctx *c, blk64_t start, e2_blkcnt_t numblocks);
 int deallocate_space(struct defrag_ctx *c, blk64_t start, e2_blkcnt_t num);
+int deallocate_blocks(struct defrag_ctx *c, struct allocation *space);
+struct allocation *allocate_blocks(struct defrag_ctx *c, e2_blkcnt_t num_blocks,
+                                   ext2_ino_t inode_nr, blk64_t first_logical);
 
 /* inode.c */
 int try_extent_merge(struct defrag_ctx *, struct inode *, struct data_extent *);

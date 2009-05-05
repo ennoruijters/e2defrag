@@ -1,4 +1,5 @@
 #include <malloc.h>
+#include <errno.h>
 #include "e2defrag.h"
 #include "extree.h"
 
@@ -87,4 +88,52 @@ int deallocate_space(struct defrag_ctx *c, blk64_t start, e2_blkcnt_t numblocks)
 	insert_free_extent(c, extent);
 	mark_blocks_unused(c, start, numblocks);
 	return 0;
+}
+
+int deallocate_blocks(struct defrag_ctx *c, struct allocation *space)
+{
+	int i, ret = 0;
+	for (i = 0; i < space->extent_count; i++) {
+		e2_blkcnt_t num_blocks = 1 + space->extents[i].end_block
+		                         - space->extents[i].start_block;
+		if (ret >= 0)
+			ret = deallocate_space(c, space->extents[i].start_block,
+		                               num_blocks);
+		else
+			deallocate_space(c, space->extents[i].start_block,
+		                         num_blocks);
+	}
+	return ret < 0 ? ret : 0;
+}
+
+/* TODO: some less naive allocation strategy would be very useful */
+struct allocation *allocate_blocks(struct defrag_ctx *c, e2_blkcnt_t num_blocks,
+                                   ext2_ino_t inode_nr, blk64_t first_logical)
+{
+	struct rb_node *n = rb_last(&c->free_tree_by_size);
+	struct free_extent *biggest = rb_entry(n, struct free_extent, size_rb);
+	struct allocation *ret;
+	int tmp;
+
+	if (biggest->end_block - biggest->start_block + 1 < num_blocks) {
+		errno = ENOSPC;
+		return NULL;
+	}
+	ret = malloc(sizeof(struct allocation) + sizeof(struct data_extent));
+	if (!ret)
+		return NULL;
+	ret->extents[0].start_block = biggest->start_block;
+	ret->extents[0].end_block = biggest->start_block + num_blocks - 1;
+	ret->extents[0].start_logical = first_logical;
+	ret->extents[0].sparse = NULL;
+	ret->extents[0].inode_nr = inode_nr;
+	ret->block_count = num_blocks;
+	ret->extent_count = 1;
+	tmp = allocate_space(c, biggest->start_block, num_blocks);
+
+	if (tmp < 0) {
+		free(ret);
+		return NULL;
+	}
+	return ret;
 }

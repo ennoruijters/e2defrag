@@ -5,9 +5,26 @@
 #include <unistd.h>
 #include <errno.h>
 #include <sys/mman.h>
+#include <obstack.h>
+#define obstack_chunk_alloc malloc
+#define obstack_chunk_free free
 #include <stdio.h>
 #include "e2defrag.h"
 #include "extree.h"
+
+#define EE_BLOCK_SET(extent, block) \
+	((extent)->ee_start = ((block) & 0xFFFFFFFF), \
+	 (extent)->ee_start_hi = ((block) >> 32))
+
+#define EI_LEAF_SET(index, block) \
+	((index)->ei_leaf = ((block) & 0xFFFFFFFF), \
+	 (index)->ei_leaf_hi = ((block) >> 32))
+
+#define EXT_PER_BLOCK(sb) \
+	((EXT2_BLOCK_SIZE(sb) - sizeof(struct ext3_extent_header)) \
+	 / sizeof(struct ext3_extent))
+#define EXTENT_LEN(extent) \
+	((extent)->end_block - (extent)->start_block + 1)
 
 static int is_sparse(struct data_extent *e, blk64_t lblock)
 {
@@ -275,8 +292,215 @@ static int write_direct_mapping(struct defrag_ctx *c, struct data_extent *e)
 
 	if (sync_inode)
 		/* Assumes the inode is completely within one page */
-		msync(PAGE_START(inode->on_disk), getpagesize(), MS_SYNC);
+		return msync(PAGE_START(inode->on_disk),getpagesize(), MS_SYNC);
 	return 0;
+}
+
+static void extent_to_ext3_extent(struct data_extent *_extent,
+                                  struct obstack *mempool)
+{
+	struct data_extent extent = *_extent;
+	struct sparse_extent *sparse = extent.sparse;
+
+	while (extent.start_block <= extent.end_block) {
+		struct ext3_extent new_extent;
+		e2_blkcnt_t length;
+		new_extent.ee_block = extent.start_logical;
+		EE_BLOCK_SET(&new_extent, extent.start_block);
+		length = extent.end_block - extent.start_block + 1;
+		if (length > EXT_INIT_MAX_LEN)
+			length = EXT_INIT_MAX_LEN;
+		if (sparse && sparse->start < extent.start_logical + length)
+			length = sparse->start - extent.start_logical;
+		extent.start_block += length;
+		extent.start_logical += length;
+		if (sparse && sparse->start == extent.start_logical) {
+			extent.start_logical += sparse->num_blocks;
+			sparse++;
+			if (!sparse->num_blocks)
+				sparse = NULL;
+		}
+		new_extent.ee_len = length;
+		if (length)
+			obstack_grow(mempool, &new_extent, sizeof(new_extent));
+	}
+}
+
+static e2_blkcnt_t calc_num_indexes(struct defrag_ctx *c, e2_blkcnt_t nextents)
+{
+	e2_blkcnt_t ret = 0;
+	assert(nextents > 4);
+
+	nextents += EXT_PER_BLOCK(&c->sb) - 1;
+	nextents /= EXT_PER_BLOCK(&c->sb);
+	while (nextents > 4) {
+		ret += nextents / EXT_PER_BLOCK(&c->sb);
+		if (nextents % EXT_PER_BLOCK(&c->sb))
+			ret += 1;
+		nextents /= EXT_PER_BLOCK(&c->sb);
+	}
+	return ret;
+}
+
+static int write_extent_block(struct defrag_ctx *c, blk64_t block,
+                              struct ext3_extent *data,
+                              e2_blkcnt_t max_extents, int depth,
+                              struct obstack *index_mempool)
+{
+	struct ext3_extent_header *header = malloc(EXT2_BLOCK_SIZE(&c->sb));
+	struct ext3_extent_idx *extents = (void *)(header + 1);
+	int ret;
+
+	assert(depth < 3);
+	if (header == NULL)
+		return -1;
+	header->eh_magic = EXT3_EXT_MAGIC;
+	header->eh_entries = EXT_PER_BLOCK(&c->sb);
+	if (header->eh_entries > max_extents)
+		header->eh_entries = max_extents;
+	header->eh_max = EXT_PER_BLOCK(&c->sb);
+	header->eh_generation = 0;
+	header->eh_depth = depth;
+	memcpy(extents, data, header->eh_entries * sizeof(struct ext3_extent));
+	ret = write_block(c, header, block);
+	if (ret >= 0) {
+		EI_LEAF_SET(extents, block);
+		extents->ei_block = data->ee_block;
+		extents->ei_unused = 0;
+		obstack_grow(index_mempool, extents, sizeof(*extents));
+	}
+	free(header);
+	if (ret < 0)
+		return ret;
+	else
+		return header->eh_entries;
+}
+
+/* When returning, the final sequence of indexes in the growing object on
+ * the mempool.
+ */
+static int writeout_extents(struct defrag_ctx *c, struct ext3_extent *leaves,
+                            struct allocation *target, e2_blkcnt_t num_extents,
+                            int *depth, struct obstack *index_mempool)
+{
+	struct data_extent *current_extent = target->extents;
+	struct ext3_extent *current_leaf = leaves;
+	blk64_t block;
+	e2_blkcnt_t num_preceding_blocks = calc_num_indexes(c, num_extents);
+	while (num_preceding_blocks > EXTENT_LEN(current_extent)) {
+		num_preceding_blocks -= EXTENT_LEN(current_extent);
+		current_extent++;
+	}
+	block = current_extent->start_block + num_preceding_blocks;
+	while (current_leaf - leaves < num_extents) {
+		e2_blkcnt_t extents_left;
+		int ret;
+		extents_left = num_extents - (current_leaf - leaves);
+		ret = write_extent_block(c, block, current_leaf, extents_left,
+		                         *depth, index_mempool);
+		if (ret < 0)
+			return ret;
+		current_leaf += ret;
+		block++;
+		if (block > current_extent->end_block) {
+			current_extent++;
+			block = current_extent->start_block;
+		}
+	}
+	*depth += 1;
+	if (obstack_object_size(index_mempool) / sizeof(*leaves) > 4) {
+		num_extents = obstack_object_size(index_mempool)
+		                                   / sizeof(struct ext3_extent);
+		leaves = obstack_finish(index_mempool);
+		return writeout_extents(c, leaves, target, num_extents,
+		                        depth, index_mempool);
+	} else {
+		return 0;
+	}
+}
+
+int update_inode_extents(struct inode *inode, struct ext3_extent *entries,
+                         e2_blkcnt_t num_entries, int depth)
+{
+	assert(num_entries <= 4);
+	inode->on_disk->extents.hdr.eh_magic = EXT3_EXT_MAGIC;
+	inode->on_disk->extents.hdr.eh_entries = num_entries;
+	inode->on_disk->extents.hdr.eh_max = 4;
+	inode->on_disk->extents.hdr.eh_depth = depth;
+	inode->on_disk->extents.hdr.eh_generation = 0;
+	memcpy(inode->on_disk->extents.extent, entries,
+	       num_entries * sizeof(struct ext3_extent));
+
+	return msync(PAGE_START(inode->on_disk), getpagesize(), MS_SYNC);
+}
+
+int write_extent_mapping(struct defrag_ctx *c, struct inode *inode)
+{
+	struct obstack mempool;
+	struct ext3_extent *leaves;
+	struct allocation *new_metadata_blocks;
+	e2_blkcnt_t num_extents, num_indexes, num_blocks;
+	int i, ret, depth = 0;
+
+	obstack_init(&mempool);
+	for (i = 0; i < inode->extent_count; i++)
+		extent_to_ext3_extent(inode->extents + i, &mempool);
+	num_extents = obstack_object_size(&mempool) / sizeof(*leaves);
+	leaves = obstack_finish(&mempool);
+	if (num_extents > 4) {
+		ext2_ino_t inode_nr = inode->extents[0].inode_nr;
+		num_indexes = calc_num_indexes(c, num_extents);
+		num_blocks = num_indexes + num_extents / EXT_PER_BLOCK(&c->sb);
+		if (num_extents % EXT_PER_BLOCK(&c->sb))
+			num_blocks++;
+		new_metadata_blocks = allocate_blocks(c, num_blocks, inode_nr,
+		                                      0);
+		if (new_metadata_blocks == NULL)
+			return -1;
+		assert(depth == 0);
+		ret = writeout_extents(c, leaves, new_metadata_blocks,
+		                       num_extents, &depth, &mempool);
+		if (ret < 0) {
+			deallocate_blocks(c, new_metadata_blocks);
+			goto error_out;
+		}
+		num_extents = obstack_object_size(&mempool) / sizeof(*leaves);
+		leaves = obstack_finish(&mempool);
+	} else {
+		depth = 0;
+		if (inode->metadata->block_count) {
+			new_metadata_blocks = malloc(sizeof(*inode->metadata));
+			if (!new_metadata_blocks) {
+				ret = -1;
+				goto error_out;
+			}
+			new_metadata_blocks->block_count = 0;
+			new_metadata_blocks->extent_count = 0;
+		} else {
+			new_metadata_blocks = inode->metadata;
+		}
+	}
+	fdatasync(c->fd);
+	ret = update_inode_extents(inode, leaves, num_extents, depth);
+	if (ret < 0) {
+		if (new_metadata_blocks != inode->metadata)
+			deallocate_blocks(c, new_metadata_blocks);
+		goto error_out;
+	}
+	if (inode->metadata != new_metadata_blocks) {
+		for (i = 0; i < inode->metadata->extent_count; i++)
+			rb_remove_data_extent(c, inode->metadata->extents + i);
+		deallocate_blocks(c, inode->metadata);
+		free(inode->metadata);
+		inode->metadata = new_metadata_blocks;
+		for (i = 0; i < inode->metadata->extent_count; i++)
+			insert_data_extent(c, inode->metadata->extents + i);
+	}
+	ret = 0;
+
+error_out:
+	obstack_free(&mempool, NULL);
+	return ret;
 }
 
 int write_extent_metadata(struct defrag_ctx *c, struct data_extent *e)
@@ -284,9 +508,7 @@ int write_extent_metadata(struct defrag_ctx *c, struct data_extent *e)
 	struct inode *inode = c->inodes[e->inode_nr];
 
 	if (inode->metadata) {
-		printf("Cannot yet write extent-based inodes\n");
-		errno = EINVAL;
-		return -1;
+		return write_extent_mapping(c, inode);
 	} else {
 		return write_direct_mapping(c, e);
 	}
