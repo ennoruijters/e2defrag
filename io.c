@@ -206,10 +206,23 @@ void close_drive(struct defrag_ctx *c)
 {
 	int i;
 	for (i = 0; i < c->nr_inode_maps; i++) {
-		munmap(c->bg_maps[i].map_start,
-		       c->bg_maps[i].inode_map_length);
-		munmap(c->bg_maps[i].bitmap - c->bg_maps[i].bitmap_offset,
-		       c->bg_maps[i].bitmap_map_length);
+		int ret;
+		ret = munmap(c->bg_maps[i].map_start,
+		             c->bg_maps[i].inode_map_length);
+		if (ret) {
+			printf("Could not unmap inode map %d\n", i);
+			printf("Params: %p %ld\n",
+			       (void *)(c->bg_maps[i].map_start),
+			       c->bg_maps[i].inode_map_length);
+		}
+		ret = munmap(c->bg_maps[i].bitmap - c->bg_maps[i].bitmap_offset,
+		             c->bg_maps[i].bitmap_map_length);
+		if (ret) {
+			printf("Could not unmap bitmap %d\n", i);
+			printf("Params: %p %ld\n", c->bg_maps[i].bitmap
+			       - c->bg_maps[i].bitmap_offset,
+			       c->bg_maps[i].bitmap_map_length);
+		}
 	}
 	free(c->bg_maps);
 	for (i = 0; i < c->sb.s_inodes_count; i++) {
@@ -223,8 +236,13 @@ void close_drive(struct defrag_ctx *c)
 		}
 		free(c->inodes[i]);
 	}
-	c->gd_map = (char *)((uintptr_t)c->gd_map % getpagesize());
-	munmap(c->gd_map, c->map_length);
+	c->gd_map = PAGE_START(c->gd_map);
+	i = munmap(c->gd_map, c->map_length);
+	if (i < 0) {
+		printf("Could not unmap group descriptors: %s\n",
+		       strerror(errno));
+		printf("Params: %p %ld\n", c->gd_map, c->map_length);
+	}
 
 	while (c->free_tree_by_size.rb_node) {
 		struct free_extent *f;
