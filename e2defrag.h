@@ -102,8 +102,8 @@ void mark_blocks_used(struct defrag_ctx *c, blk64_t first_block,
                       e2_blkcnt_t count);
 
 /* bmove.c */
-int move_file_extent(struct defrag_ctx *c, struct inode *i,
-                     blk64_t logical_start, blk64_t new_start);
+int move_file_range(struct defrag_ctx *c, ext2_ino_t inode, blk64_t from,
+                    e2_blkcnt_t numblocks, blk64_t dest);
 int move_file_data(struct defrag_ctx *c, ext2_ino_t inode, blk64_t dest);
 
 /* debug.c */

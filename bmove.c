@@ -98,14 +98,29 @@ int move_file_extent(struct defrag_ctx *c, struct inode *i,
 	return ret;
 }
 
-int move_file_data(struct defrag_ctx *c, ext2_ino_t inode_nr, blk64_t dest)
+int move_file_range(struct defrag_ctx *c, ext2_ino_t inode_nr, blk64_t from,
+                    e2_blkcnt_t numblocks, blk64_t dest)
 {
 	struct inode *inode = c->inodes[inode_nr];
 	struct free_extent *free_extent;
-	int extent_nr, ret;
-	free_extent = containing_free_extent(c, dest);
+	int extent_nr = 0, ret;
 
-	for (extent_nr = 0; extent_nr < inode->extent_count; extent_nr++) {
+	while (from && extent_nr < inode->extent_count) {
+		struct data_extent *extent = &inode->extents[extent_nr];
+		if (from - (extent->end_block - extent->start_block + 1) < 0) {
+			blk64_t new_end_block = extent->start_block + from;
+			ret = split_extent(c, inode, extent, new_end_block);
+			if (ret < 0)
+				return ret;
+			inode = c->inodes[inode_nr]; /* might have changed */
+			extent = &inode->extents[extent_nr];
+		}
+		from -= extent->end_block - extent->start_block + 1;
+		++extent_nr;
+	}
+	assert(!from);
+	free_extent = containing_free_extent(c, dest);
+	while (numblocks && extent_nr < inode->extent_count) {
 		struct data_extent *extent = &inode->extents[extent_nr];
 		blk64_t end_block;
 		if (!free_extent) {
@@ -114,7 +129,16 @@ int move_file_data(struct defrag_ctx *c, ext2_ino_t inode_nr, blk64_t dest)
 			errno = ENOENT;
 			return -1;
 		}
+		if (numblocks < extent->end_block - extent->start_block + 1) {
+			blk64_t new_end_block = extent->start_block + numblocks;
+			ret = split_extent(c, inode, extent, new_end_block);
+			if (ret < 0)
+				return ret;
+			inode = c->inodes[inode_nr]; /* might have changed */
+			extent = &inode->extents[extent_nr];
+		}
 		end_block = dest + (extent->end_block - extent->start_block);
+		numblocks -= extent->end_block - extent->start_block + 1;
 		if (end_block > free_extent->end_block) {
 			blk64_t new_end_block = extent->start_block
 			                      + (free_extent->end_block - dest);
@@ -131,7 +155,8 @@ int move_file_data(struct defrag_ctx *c, ext2_ino_t inode_nr, blk64_t dest)
 		inode = c->inodes[inode_nr]; /* might have changed */
 		extent = &inode->extents[extent_nr];
 		dest = extent->end_block + 1;
-		if (extent_nr + 1 < inode->extent_count) {
+		++extent_nr;
+		if (extent_nr < inode->extent_count) {
 			free_extent = free_extent_after(c, dest);
 			if (free_extent) {
 				dest = free_extent->start_block;
@@ -139,4 +164,10 @@ int move_file_data(struct defrag_ctx *c, ext2_ino_t inode_nr, blk64_t dest)
 		}
 	}
 	return 0;
+}
+
+int move_file_data(struct defrag_ctx *c, ext2_ino_t inode_nr, blk64_t dest)
+{
+	struct inode *inode = c->inodes[inode_nr];
+	return move_file_range(c, inode_nr, 0, inode->block_count, dest);
 }
