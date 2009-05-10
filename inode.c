@@ -99,6 +99,43 @@ blk64_t get_logical_block(struct inode *inode, blk64_t phys_block)
 	return ret;
 }
 
+/* Returns the physical block corresponding to the requested logical block
+ * of the provided inode. If extent_nr is not NULL, the extent number
+ * containing that blocks is returned in it. If the block is sparse,
+ * 0 is returned. On error, (blk64_t)-1 is returned and errno is set
+ * appropriatly.
+ */
+blk64_t get_physical_block(struct inode *inode, blk64_t logical_block,
+                           int *extent_nr)
+{
+	struct data_extent *extent;
+	int current = 0;
+	blk64_t ret;
+	while (current < inode->extent_count - 1) {
+		extent = &inode->extents[current + 1];
+		if (extent->start_logical <= logical_block)
+			current++;
+		else
+			break;
+	}
+	extent = &inode->extents[current];
+	ret = extent->start_block + logical_block - extent->start_logical;
+	if (extent_nr)
+		*extent_nr = current;
+	if (extent->start_logical < logical_block) {
+		struct sparse_extent *sparse = extent->sparse;
+		while (sparse
+		       && sparse->num_blocks
+		       && sparse->start <= logical_block) {
+			if (sparse->start == logical_block)
+				return 0;
+			ret -= sparse->num_blocks;
+			sparse++;
+		}
+	}
+	return ret;
+}
+
 /* Note that this function does not free the old sparse list */
 int split_sparse(struct data_extent *extent1,
                  struct data_extent *extent2,

@@ -120,6 +120,8 @@ struct allocation *allocate_blocks(struct defrag_ctx *c, e2_blkcnt_t num_blocks,
 int try_extent_merge(struct defrag_ctx *, struct inode *, struct data_extent *);
 int split_extent(struct defrag_ctx *c, struct inode *inode,
                  struct data_extent *extent, blk64_t new_end_block);
+blk64_t get_physical_block(struct inode *inode, blk64_t logical_block,
+                           int *extent_nr);
 
 /* interactive.c */
 int move_extent_interactive(struct defrag_ctx *c);
