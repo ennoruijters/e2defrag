@@ -15,7 +15,6 @@ int read_block(struct defrag_ctx *c, void *buf, blk64_t block)
 	long long ret;
 	ret = lseek64(c->fd, block * EXT2_BLOCK_SIZE(&c->sb), SEEK_SET);
 	if (ret < 0) {
-		printf("%lld\n", ret);
 		printf("Cannot seek to block %llu (block_size %d)\n", block,
 		       EXT2_BLOCK_SIZE(&c->sb));
 		return -1;

@@ -272,8 +272,6 @@ static int read_extent_leaf(struct tmp_extent *first_extent,
 		return 0;
 	}
 	for (i = 0; i < header->eh_entries; i++) {
-		printf("Adding %u from %llu\n", extents[i].ee_len,
-		       EE_BLOCK(&extents[i]));
 		ret = do_blocks(first_extent, last_extent, mempool,
 		                EE_BLOCK(&extents[i]), extents[i].ee_block,
 				extents[i].ee_len);
@@ -296,13 +294,10 @@ static int read_extent_index(struct defrag_ctx *c,
 		printf("Inode has unknown type of extents, ignoring.");
 		return 0;
 	}
-	printf("New index, depth %u\n", header->eh_depth);
 	for (i = 0; i < header->eh_entries; i++) {
 		unsigned char buffer[EXT2_BLOCK_SIZE(&c->sb)];
 		struct ext3_extent_header *new_header = (void *)buffer;
 		if (metadata_only) {
-			printf("Adding metadata block %llu (%llu)\n",
-			       EI_BLOCK(&extents[i]), *metadata_only);
 			ret = do_blocks(first_extent, last_extent, mempool,
 			                EI_BLOCK(&extents[i]),
 			                (*metadata_only)++, 1);
