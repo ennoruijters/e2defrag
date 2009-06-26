@@ -10,6 +10,12 @@ typedef __u64 blk64_t;
 typedef __u64 e2_blkcnt_t;
 typedef __u32 ext2_ino_t;
 
+struct settings {
+	unsigned int simulate : 1;
+};
+
+extern struct settings global_settings;
+
 #define SUPERBLOCK_OFFSET 1024
 #define SUPERBLOCK_SIZE 1024
 
