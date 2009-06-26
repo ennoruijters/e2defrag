@@ -2,12 +2,33 @@
 #include "e2defrag.h"
 #include "extree.h"
 
+static void print_fragged_inodes(const struct defrag_ctx *c)
+{
+	ext2_ino_t i;
+	ext2_ino_t nr_inodes = ext2_inodes_on_disk(&c->sb);
+	for (i = 0; i < nr_inodes; i++) {
+		const struct inode *inode = c->inodes[i];
+		if (!inode)
+			continue;
+		if (inode->extent_count > 1)
+			printf("Inode %u: %llu fragments (%llu blocks)\n",
+			       i, inode->extent_count, inode->block_count);
+		if (inode->metadata && inode->metadata->extent_count > 1)
+			printf("Metadata for inode %u: %llu fragments "
+			       "(%llu blocks)\n",
+			       i, inode->metadata->extent_count,
+			       inode->metadata->block_count);
+	}
+}
+
 int move_file_interactive(struct defrag_ctx *c)
 {
 	struct inode *inode;
 	blk64_t destination;
 	ext2_ino_t inode_nr;
 	int i;
+
+	print_fragged_inodes(c);
 	do {
 		printf("Specify inode number (or -1 for a dump, or 0 to exit): ");
 		scanf("%u", &inode_nr);

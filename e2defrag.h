@@ -25,6 +25,19 @@ typedef __u32 ext2_ino_t;
 #define PAGE_START(x) \
 	((void *)(((uintptr_t)(x)) - (((uintptr_t)(x)) % getpagesize())))
 
+static inline e2_blkcnt_t ext2_groups_on_disk(const struct ext2_super_block *sb)
+{
+	e2_blkcnt_t ret = sb->s_blocks_count / sb->s_blocks_per_group;
+	if (sb->s_blocks_count % sb->s_blocks_per_group)
+		ret++;
+	return ret;
+}
+
+static inline ext2_ino_t ext2_inodes_on_disk(const struct ext2_super_block *sb)
+{
+	return ext2_groups_on_disk(sb) * EXT2_INODES_PER_GROUP(sb);
+}
+
 struct sparse_extent {
 	blk64_t start;
 	e2_blkcnt_t num_blocks;
