@@ -46,6 +46,7 @@ static int __move_block_range(struct defrag_ctx *c, blk64_t from, blk64_t to,
 	return 0;
 }
 
+/* This function does not allocate the space, only move data into it. */
 int move_file_extent(struct defrag_ctx *c, struct inode *i,
                      blk64_t logical_start, blk64_t new_start)
 {
@@ -64,9 +65,6 @@ int move_file_extent(struct defrag_ctx *c, struct inode *i,
 		return -1;
 	}
 	blk_cnt = extent_to_copy->end_block - extent_to_copy->start_block + 1;
-	ret = allocate_space(c, new_start, blk_cnt);
-	if (ret)
-		return -1;
 	ret = __move_block_range(c, extent_to_copy->start_block, new_start,
 	                         blk_cnt);
 	if (!ret)
@@ -145,9 +143,14 @@ int move_file_range(struct defrag_ctx *c, ext2_ino_t inode_nr, blk64_t from,
 			inode = c->inodes[inode_nr]; /* might have changed */
 			extent = &inode->extents[extent_nr];
 		}
+		ret = allocate_space(c, extent->start_logical, dest);
+		if (ret)
+			return -1;
 		ret = move_file_extent(c, inode, extent->start_logical, dest);
-		if (ret < 0)
+		if (ret < 0) {
+			deallocate_space(c, extent->start_logical, dest);
 			return ret;
+		}
 		extent_nr -= ret;
 		inode = c->inodes[inode_nr]; /* might have changed */
 		extent = &inode->extents[extent_nr];
@@ -167,4 +170,44 @@ int move_file_data(struct defrag_ctx *c, ext2_ino_t inode_nr, blk64_t dest)
 {
 	struct inode *inode = c->inodes[inode_nr];
 	return move_file_range(c, inode_nr, 0, inode->block_count, dest);
+}
+
+int move_inode_data(struct defrag_ctx *c, struct inode *inode,
+                    struct allocation *target)
+{
+	struct data_extent *dest_extent;
+	int extent_nr = 0, ret;
+	blk64_t dest;
+	ext2_ino_t inode_nr = inode->extents[0].inode_nr;
+
+	dest_extent = target->extents;
+	dest = dest_extent->start_block;
+	while (extent_nr < inode->extent_count) {
+		struct data_extent *extent = &inode->extents[extent_nr];
+		blk64_t end_block;
+		e2_blkcnt_t numblocks = dest_extent->end_block - dest + 1;
+		if (numblocks < extent->end_block - extent->start_block + 1) {
+			blk64_t new_end_block = extent->start_block + numblocks;
+			ret = split_extent(c, inode, extent, new_end_block);
+			if (ret < 0)
+				return ret;
+			inode = c->inodes[inode_nr]; /* might have changed */
+			extent = &inode->extents[extent_nr];
+		}
+		end_block = dest + (extent->end_block - extent->start_block);
+		ret = move_file_extent(c, inode, extent->start_logical, dest);
+		if (ret < 0)
+			return ret;
+		extent_nr -= ret;
+		inode = c->inodes[inode_nr]; /* might have changed */
+		extent = &inode->extents[extent_nr];
+		dest = extent->end_block + 1;
+		++extent_nr;
+		if (dest > dest_extent->end_block &&
+		    extent_nr < inode->extent_count) {
+			dest_extent++;
+			dest = dest_extent->start_block;
+		}
+	}
+	return 0;
 }

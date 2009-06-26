@@ -118,6 +118,8 @@ void mark_blocks_used(struct defrag_ctx *c, blk64_t first_block,
 int move_file_range(struct defrag_ctx *c, ext2_ino_t inode, blk64_t from,
                     e2_blkcnt_t numblocks, blk64_t dest);
 int move_file_data(struct defrag_ctx *c, ext2_ino_t inode, blk64_t dest);
+int move_inode_data(struct defrag_ctx *c, struct inode *inode,
+                    struct allocation *target);
 
 /* debug.c */
 void dump_trees(struct defrag_ctx *c, int to_dump);
@@ -139,6 +141,7 @@ blk64_t get_physical_block(struct inode *inode, blk64_t logical_block,
 /* interactive.c */
 int move_extent_interactive(struct defrag_ctx *c);
 int move_file_interactive(struct defrag_ctx *c);
+int defrag_file_interactive(struct defrag_ctx *c);
 
 /* io.c */
 struct defrag_ctx *open_drive(char *filename, char read_only);

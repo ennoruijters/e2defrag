@@ -33,7 +33,7 @@ int main(int argc, char *argv[])
 #ifndef NDEBUG
 	dump_trees(disk, 3);
 #endif
-	move_file_interactive(disk);
+	defrag_file_interactive(disk);
 	close_drive(disk);
 	return 0;
 }

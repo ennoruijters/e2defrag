@@ -2,6 +2,8 @@
 #include "e2defrag.h"
 #include "extree.h"
 
+extern int do_one_inode(struct defrag_ctx *c, ext2_ino_t);
+
 static void print_fragged_inodes(const struct defrag_ctx *c)
 {
 	ext2_ino_t i;
@@ -19,6 +21,28 @@ static void print_fragged_inodes(const struct defrag_ctx *c)
 			       i, inode->metadata->extent_count,
 			       inode->metadata->block_count);
 	}
+}
+
+int defrag_file_interactive(struct defrag_ctx *c)
+{
+	struct inode *inode;
+	ext2_ino_t inode_nr;
+
+	print_fragged_inodes(c);
+	do {
+		printf("Specify inode number (or -1 for a dump, or 0 to exit): ");
+		scanf("%u", &inode_nr);
+		if (inode_nr == 0)
+			return 0;
+		if (inode_nr == -1)
+			dump_trees(c, 2);
+	} while (inode_nr < 11 || inode_nr > c->sb.s_inodes_count);
+	inode = c->inodes[inode_nr];
+	if (inode == NULL || inode->extent_count == 0) {
+		printf("Inode has no data associated\n");
+		return 0;
+	}
+	return do_one_inode(c, inode_nr);
 }
 
 int move_file_interactive(struct defrag_ctx *c)
