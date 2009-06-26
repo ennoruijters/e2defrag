@@ -17,6 +17,8 @@ static int __move_block_range(struct defrag_ctx *c, blk64_t from, blk64_t to,
 	int ret, size;
 	loff_t from_offset, to_offset;
 
+	if (global_settings.simulate)
+		return 0;
 	if (transfer_pipe[0] < 0) {
 		ret = pipe(transfer_pipe);
 		if (ret)

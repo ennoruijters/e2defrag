@@ -79,7 +79,7 @@ int main(int argc, char *argv[])
 	ret = parse_options(argc, argv, &filename);
 	if (ret)
 		usage(ret);
-	disk = open_drive(filename, 0);
+	disk = open_drive(filename);
 	if (!disk) {
 		printf("Error opening drive: %s\n", strerror(errno));
 		return errno;

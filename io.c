@@ -28,6 +28,8 @@ int read_block(struct defrag_ctx *c, void *buf, blk64_t block)
 int write_block(struct defrag_ctx *c, void *buf, blk64_t block)
 {
 	long long ret;
+	if (global_settings.simulate)
+		return 0;
 	ret = lseek64(c->fd, block * EXT2_BLOCK_SIZE(&c->sb), SEEK_SET);
 	if (ret < 0) {
 		printf("Cannot seek to block %llu (block_size %d)\n", block,
@@ -58,7 +60,7 @@ static int map_gds(struct defrag_ctx *c)
 	}
 	if (map_length % getpagesize())
 		map_length += getpagesize() - map_length % getpagesize();
-	flags = c->read_only ? MAP_PRIVATE : MAP_SHARED;
+	flags = global_settings.simulate ? MAP_PRIVATE : MAP_SHARED;
 	c->gd_map = mmap(NULL, map_length, PROT_READ | PROT_WRITE, flags,
 	                 c->fd, gd_offset);
 	if (c->gd_map == MAP_FAILED)
@@ -73,14 +75,14 @@ static int map_gds(struct defrag_ctx *c)
 	return 0;
 }
 
-struct defrag_ctx *open_drive(char *filename, char read_only)
+struct defrag_ctx *open_drive(char *filename)
 {
 	struct defrag_ctx *ret;
 	struct ext2_super_block sb;
 	int tmp, fd;
 	int nr_block_groups;
 
-	fd = open(filename, read_only ? O_RDONLY : O_RDWR);
+	fd = open(filename, global_settings.simulate ? O_RDONLY : O_RDWR);
 	if (fd < 0)
 		goto error_out;
 
@@ -103,7 +105,6 @@ struct defrag_ctx *open_drive(char *filename, char read_only)
 		goto error_alloc;
 	ret->fd = fd;
 	ret->sb = sb;
-	ret->read_only = read_only;
 	ret->extents_by_block = RB_ROOT;
 	ret->extents_by_size = RB_ROOT;
 	ret->free_tree_by_size = RB_ROOT;
@@ -163,8 +164,8 @@ long parse_inode_table(struct defrag_ctx *c, blk64_t bitmap_block,
 	}
 	if (table_length % getpagesize())
 		table_length += getpagesize() - (table_length % getpagesize());
-	i = c->read_only ? (PROT_READ) : (PROT_READ | PROT_WRITE);
-	inode_table = mmap(NULL, table_length, i, MAP_SHARED, c->fd,
+	i = global_settings.simulate ? MAP_PRIVATE : MAP_SHARED;
+	inode_table = mmap(NULL, table_length, PROT_READ | PROT_WRITE, i, c->fd,
 	                   table_start_offset);
 	if (inode_table == MAP_FAILED) {
 		munmap(bitmap - bitmap_delta_offset, bitmap_length);
@@ -275,7 +276,7 @@ long parse_free_bitmap(struct defrag_ctx *c, blk64_t bitmap_block,
 	if (map_length % getpagesize())
 		map_length += getpagesize() - (map_length % getpagesize());
 
-	i = c->read_only ? MAP_PRIVATE : MAP_SHARED;
+	i = global_settings.simulate ? MAP_PRIVATE : MAP_SHARED;
 	bitmap = mmap(NULL, map_length, PROT_READ | PROT_WRITE, i,
 	              c->fd, start_offset);
 	if (bitmap == MAP_FAILED)

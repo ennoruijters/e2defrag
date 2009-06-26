@@ -108,7 +108,6 @@ struct defrag_ctx {
 	size_t map_length;
 	int nr_inode_maps;
 	int fd;
-	int read_only;
 	struct inode *inodes[];
 };
 
@@ -150,7 +149,7 @@ int move_file_interactive(struct defrag_ctx *c);
 int defrag_file_interactive(struct defrag_ctx *c);
 
 /* io.c */
-struct defrag_ctx *open_drive(char *filename, char read_only);
+struct defrag_ctx *open_drive(char *filename);
 int read_block(struct defrag_ctx *c, void *buf, blk64_t block);
 int write_block(struct defrag_ctx *c, void *buf, blk64_t block);
 int set_e2_filesystem_data(struct defrag_ctx *c);
