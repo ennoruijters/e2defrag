@@ -507,6 +507,7 @@ long parse_inode(struct defrag_ctx *c, ext2_ino_t inode_nr,
 			c->inodes[inode_nr]->extent_count = 0;
 			c->inodes[inode_nr]->on_disk =
 			                  (union on_disk_block *)inode->i_block;
+			c->inodes[inode_nr]->metadata = NULL;
 		}
 		return 0;
 	}
