@@ -48,7 +48,7 @@ static int map_gds(struct defrag_ctx *c)
 	if (c->sb.s_blocks_count % c->sb.s_blocks_per_group)
 		num_block_groups++;
 	size_t map_length = num_block_groups * EXT2_DESC_SIZE(&c->sb);
-	off_t map_offset;
+	off_t map_offset = 0;
 	off_t gd_offset = EXT2_BLOCK_SIZE(&c->sb);
 	int flags, i;
 	if (gd_offset < SUPERBLOCK_OFFSET + SUPERBLOCK_SIZE)
@@ -65,7 +65,7 @@ static int map_gds(struct defrag_ctx *c)
 	                 c->fd, gd_offset);
 	if (c->gd_map == MAP_FAILED)
 		return -1;
-	c->gd_map += map_offset;
+	c->gd_map = ((char *)(c->gd_map)) + map_offset;
 	c->map_length = map_length;
 
 	for (i = 0; i < num_block_groups; i++) {
