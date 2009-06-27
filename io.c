@@ -234,6 +234,8 @@ void close_drive(struct defrag_ctx *c)
 			struct sparse_extent *s = e->sparse;
 			free (s);
 		}
+		if (c->inodes[i]->metadata)
+			free(c->inodes[i]->metadata);
 		free(c->inodes[i]);
 	}
 	c->gd_map = PAGE_START(c->gd_map);
