@@ -1,5 +1,6 @@
 #include <obstack.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <errno.h>
 #define obstack_chunk_alloc malloc
 #define obstack_chunk_free free
@@ -11,7 +12,7 @@
  * than the current one.
  * Returns 0 for success, 1 for no opportunity, -1 for error.
  */
-int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr)
+int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr, int silent)
 {
 	struct inode *inode;
 	struct allocation *target;
@@ -27,6 +28,8 @@ int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr)
 			return 1;
 	}
 	if (target->extent_count >= inode->extent_count) {
+		if (!silent)
+			printf("No better placement possible: best new placement has %llu fragments\n", target->extent_count);
 		ret = deallocate_blocks(c, target);
 		free(target);
 		if (ret < 0)

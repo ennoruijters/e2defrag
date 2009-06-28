@@ -1,8 +1,10 @@
 #include <stdio.h>
+#include <errno.h>
+#include <string.h>
 #include "e2defrag.h"
 #include "extree.h"
 
-extern int do_one_inode(struct defrag_ctx *c, ext2_ino_t);
+extern int do_one_inode(struct defrag_ctx *c, ext2_ino_t, int);
 
 static void print_fragged_inodes(const struct defrag_ctx *c)
 {
@@ -28,6 +30,7 @@ int defrag_file_interactive(struct defrag_ctx *c)
 	struct free_extent *f = rb_entry(rb_last(&c->free_tree_by_size),
 	                                 struct free_extent, size_rb);
 	struct inode *inode;
+	int ret;
 	ext2_ino_t inode_nr;
 
 	print_fragged_inodes(c);
@@ -45,7 +48,12 @@ int defrag_file_interactive(struct defrag_ctx *c)
 		printf("Inode has no data associated\n");
 		return 0;
 	}
-	return do_one_inode(c, inode_nr);
+	ret = do_one_inode(c, inode_nr, 0);
+	if (ret < 0)
+		printf("Error: %s\n", strerror(errno));
+	printf("Inode now has %llu fragments\n",
+	       c->inodes[inode_nr]->extent_count);
+	return ret;
 }
 
 int move_file_interactive(struct defrag_ctx *c)
