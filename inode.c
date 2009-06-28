@@ -56,9 +56,13 @@ static struct sparse_extent *merge_sparse(struct sparse_extent *s1,
 		new_sparse = realloc(s1, num_bytes);
 		if (!new_sparse)
 			return NULL; /* errno should be ENOMEM */
-		s1 = new_sparse;
-		while (s1->num_blocks)
-			s1++;
+		if (s1 != NULL) {
+			s1 = new_sparse;
+			while (s1->num_blocks)
+				s1++;
+		} else {
+			s1 = new_sparse;
+		}
 		if (gap_length) {
 			s1->start = gap_start;
 			s1->num_blocks = gap_length;
