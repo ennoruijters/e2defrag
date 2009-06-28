@@ -369,11 +369,10 @@ static int write_extent_block(struct defrag_ctx *c, blk64_t block,
 		extents->ei_unused = 0;
 		obstack_grow(index_mempool, extents, sizeof(*extents));
 	}
+	if (ret >= 0)
+		ret = header->eh_entries;
 	free(header);
-	if (ret < 0)
-		return ret;
-	else
-		return header->eh_entries;
+	return ret;
 }
 
 /* When returning, the final sequence of indexes in the growing object on
@@ -395,6 +394,10 @@ static int writeout_extents(struct defrag_ctx *c, struct ext3_extent *leaves,
 	while (current_leaf - leaves < num_extents) {
 		e2_blkcnt_t extents_left;
 		int ret;
+		if (block > current_extent->end_block) {
+			current_extent++;
+			block = current_extent->start_block;
+		}
 		extents_left = num_extents - (current_leaf - leaves);
 		ret = write_extent_block(c, block, current_leaf, extents_left,
 		                         *depth, index_mempool);
@@ -402,10 +405,6 @@ static int writeout_extents(struct defrag_ctx *c, struct ext3_extent *leaves,
 			return ret;
 		current_leaf += ret;
 		block++;
-		if (block > current_extent->end_block) {
-			current_extent++;
-			block = current_extent->start_block;
-		}
 	}
 	*depth += 1;
 	if (obstack_object_size(index_mempool) / sizeof(*leaves) > 4) {
