@@ -25,10 +25,13 @@ static void print_fragged_inodes(const struct defrag_ctx *c)
 
 int defrag_file_interactive(struct defrag_ctx *c)
 {
+	struct free_extent *f = rb_entry(rb_last(&c->free_tree_by_size),
+	                                 struct free_extent, size_rb);
 	struct inode *inode;
 	ext2_ino_t inode_nr;
 
 	print_fragged_inodes(c);
+	printf("Biggest free space: %llu blocks\n", f->end_block - f->start_block + 1);
 	do {
 		printf("Specify inode number (or -1 for a dump, or 0 to exit): ");
 		scanf("%u", &inode_nr);
