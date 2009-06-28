@@ -171,8 +171,8 @@ int split_sparse(struct data_extent *extent1,
 			if (!s1)
 				return -1;
 			s2 = malloc((cnt2 + 1) * sizeof(*s2));
-			if (!s1) {
-				s1 = NULL;
+			if (!s2) {
+				free(s1);
 				return -1;
 			}
 			s = old_sparse;
