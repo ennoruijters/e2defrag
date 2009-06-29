@@ -97,7 +97,7 @@ struct defrag_ctx {
 	struct rb_root free_tree_by_block;
 	struct rb_root free_tree_by_size;
 	struct {
-		struct ext2_inode *map_start;
+		void *map_start;
 		unsigned char *bitmap;
 		struct ext4_group_desc *gd;
 		size_t inode_map_length;

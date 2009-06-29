@@ -433,6 +433,32 @@ int update_inode_extents(struct inode *inode, struct ext3_extent *entries,
 	return msync(PAGE_START(inode->on_disk), getpagesize(), MS_SYNC);
 }
 
+void update_inode_block_count(struct defrag_ctx *c, struct inode *inode,
+                              struct allocation *new)
+{
+	e2_blkcnt_t old_num_blocks, new_num_blocks;
+	ext2_ino_t inode_nr;
+	uint32_t group_nr;
+	char *map;
+	struct ext2_inode *on_disk;
+	if (inode->metadata->block_count == new->block_count)
+		return;
+	assert(inode->extent_count); /* Otherwise why would we be writing
+					metadata? */
+	inode_nr = inode->extents[0].inode_nr - 1;
+	group_nr = inode_nr / EXT2_INODES_PER_GROUP(&c->sb);
+	map = c->bg_maps[group_nr].map_start;
+	map += (inode_nr % EXT2_INODES_PER_GROUP(&c->sb)) * EXT2_INODE_SIZE(&c->sb);
+	on_disk = (struct ext2_inode *)map;
+	old_num_blocks = inode->metadata->block_count;
+	old_num_blocks *= EXT2_BLOCK_SIZE(&c->sb) / 512;
+	new_num_blocks = new->block_count * EXT2_BLOCK_SIZE(&c->sb) / 512;
+	on_disk->i_blocks -= old_num_blocks;
+	on_disk->i_blocks += new_num_blocks;
+	/* No sync because the i_blocks field is not very important anyway */
+	return;
+}
+
 int write_extent_mapping(struct defrag_ctx *c, struct inode *inode)
 {
 	struct obstack mempool;
@@ -486,6 +512,7 @@ int write_extent_mapping(struct defrag_ctx *c, struct inode *inode)
 			deallocate_blocks(c, new_metadata_blocks);
 		goto error_out;
 	}
+	update_inode_block_count(c, inode, new_metadata_blocks);
 	if (inode->metadata != new_metadata_blocks) {
 		for (i = 0; i < inode->metadata->extent_count; i++)
 			rb_remove_data_extent(c, inode->metadata->extents + i);

@@ -171,7 +171,7 @@ long parse_inode_table(struct defrag_ctx *c, blk64_t bitmap_block,
 		munmap(bitmap - bitmap_delta_offset, bitmap_length);
 		return -1;
 	}
-	c->bg_maps[group_nr].map_start = (void *)inode_table;
+	c->bg_maps[group_nr].map_start = inode_table;
 	c->bg_maps[group_nr].inode_map_length = table_length;
 	inode_table += table_delta_offset;
 
@@ -212,7 +212,7 @@ void close_drive(struct defrag_ctx *c)
 		if (ret) {
 			printf("Could not unmap inode map %d\n", i);
 			printf("Params: %p %ld\n",
-			       (void *)(c->bg_maps[i].map_start),
+			       (c->bg_maps[i].map_start),
 			       c->bg_maps[i].inode_map_length);
 		}
 		ret = munmap(c->bg_maps[i].bitmap - c->bg_maps[i].bitmap_offset,
