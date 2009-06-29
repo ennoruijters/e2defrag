@@ -190,6 +190,7 @@ int move_inode_data(struct defrag_ctx *c, struct inode *inode,
 		e2_blkcnt_t numblocks = dest_extent->end_block - dest + 1;
 		if (numblocks < extent->end_block - extent->start_block + 1) {
 			blk64_t new_end_block = extent->start_block + numblocks;
+			new_end_block -= 1;
 			ret = split_extent(c, inode, extent, new_end_block);
 			if (ret < 0)
 				return ret;
