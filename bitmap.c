@@ -3,14 +3,18 @@
 #include <limits.h>
 #include <string.h>
 #include <unistd.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <sys/mman.h>
 #include "e2defrag.h"
+#include "crc16.h"
 
 /* Returns the address of the page which was modified */
 static void *__mark_single_block(struct defrag_ctx *c, blk64_t block, char mark)
 {
-	int block_group = block / c->sb.s_blocks_per_group;
+	uint32_t block_group = block / c->sb.s_blocks_per_group;
 	int offset = block % c->sb.s_blocks_per_group;
+	uint16_t crc;
 	char offset_in_byte = offset % CHAR_BIT;
 	offset /= CHAR_BIT;
 
@@ -21,6 +25,22 @@ static void *__mark_single_block(struct defrag_ctx *c, blk64_t block, char mark)
 		c->bg_maps[block_group].bitmap[offset] &= ~(1 <<offset_in_byte);
 		c->bg_maps[block_group].gd->bg_free_blocks_count++;
 	}
+	if (c->sb.s_rev_level != EXT2_GOOD_OLD_REV) {
+		char *offset;
+		int size;
+		crc = crc16(~0, c->sb.s_uuid, sizeof(c->sb.s_uuid));
+		crc = crc16(crc, (void *)&block_group, sizeof(block_group));
+		crc = crc16(crc, (void *)(c->bg_maps[block_group].gd),
+		            offsetof(struct ext4_group_desc, bg_checksum));
+		offset = (char *)&c->bg_maps[block_group].gd->bg_checksum;
+		offset += sizeof(crc);
+		size = EXT2_DESC_SIZE(&c->sb);
+		size -= offsetof(struct ext4_group_desc, bg_checksum);
+		size -= sizeof(crc);
+		crc = crc16(crc, (void *)offset, size);
+		c->bg_maps[block_group].gd->bg_checksum = crc;
+	}
+
 	return PAGE_START(&c->bg_maps[block_group].bitmap[offset]);
 }
 
@@ -41,7 +61,7 @@ static void mark_blocks(struct defrag_ctx *c, blk64_t first_block,
 	}
 	while (count / CHAR_BIT) {
 		void *tmp;
-		int block_group = first_block / c->sb.s_blocks_per_group;
+		uint32_t block_group = first_block / c->sb.s_blocks_per_group;
 		int offset = first_block % c->sb.s_blocks_per_group;
 		e2_blkcnt_t n = count;
 		if (n + offset >= c->sb.s_blocks_per_group)
@@ -54,6 +74,24 @@ static void mark_blocks(struct defrag_ctx *c, blk64_t first_block,
 			c->bg_maps[block_group].gd->bg_free_blocks_count -= n;
 		else
 			c->bg_maps[block_group].gd->bg_free_blocks_count += n;
+		if (c->sb.s_rev_level != EXT2_GOOD_OLD_REV) {
+			uint16_t crc;
+			char *offset;
+			int size;
+			crc = crc16(~0, c->sb.s_uuid, sizeof(c->sb.s_uuid));
+			crc = crc16(crc, (void *)&block_group,
+			            sizeof(block_group));
+			crc = crc16(crc, (void *)(c->bg_maps[block_group].gd),
+			            offsetof(struct ext4_group_desc,
+			                     bg_checksum));
+			offset = (char *)&c->bg_maps[block_group].gd->bg_checksum;
+			offset += sizeof(crc);
+			size = EXT2_DESC_SIZE(&c->sb);
+			size -= offsetof(struct ext4_group_desc, bg_checksum);
+			size -= sizeof(crc);
+			crc = crc16(crc, (void *)offset, size);
+			c->bg_maps[block_group].gd->bg_checksum = crc;
+		}
 		n /= CHAR_BIT;
 		memset(c->bg_maps[block_group].bitmap + offset, byte_mask, n);
 		tmp = PAGE_START(c->bg_maps[block_group].bitmap + offset);
