@@ -36,12 +36,22 @@ int defrag_file_interactive(struct defrag_ctx *c)
 	print_fragged_inodes(c);
 	printf("Biggest free space: %llu blocks\n", f->end_block - f->start_block + 1);
 	do {
-		printf("Specify inode number (or -1 for a dump, or 0 to exit): ");
+		printf("Specify inode number (or -1 for free space consolidation, or 0 to exit): ");
 		scanf("%u", &inode_nr);
 		if (inode_nr == 0)
 			return 0;
-		if (inode_nr == -1)
-			dump_trees(c, 2);
+		if (inode_nr == -1) {
+			ret = consolidate_free_space(c, 0);
+			if (ret)
+				printf("Error: %s\n", strerror(errno));
+			return ret;
+		}
+		if (inode_nr == -2) {
+			ret = 0;
+			while (!ret)
+				ret = consolidate_free_space(c, 0);
+			return ret;
+		}
 	} while (inode_nr < 11 || inode_nr > c->sb.s_inodes_count);
 	inode = c->inodes[inode_nr];
 	if (inode == NULL || inode->extent_count == 0) {

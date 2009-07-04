@@ -113,6 +113,9 @@ struct defrag_ctx {
 
 /* FUNCTION DECLARATIONS */
 
+/* algorithm.c */
+int consolidate_free_space(struct defrag_ctx *c, int silent);
+
 /* bitmap.c */
 void mark_blocks_unused(struct defrag_ctx *c, blk64_t first_block,
                         e2_blkcnt_t count);
@@ -122,6 +125,8 @@ void mark_blocks_used(struct defrag_ctx *c, blk64_t first_block,
 /* bmove.c */
 int move_file_range(struct defrag_ctx *c, ext2_ino_t inode, blk64_t from,
                     e2_blkcnt_t numblocks, blk64_t dest);
+int move_data_extent(struct defrag_ctx *c, struct data_extent *extent_to_copy,
+                     blk64_t new_start);
 int move_file_data(struct defrag_ctx *c, ext2_ino_t inode, blk64_t dest);
 int move_inode_data(struct defrag_ctx *c, struct inode *inode,
                     struct allocation *target);

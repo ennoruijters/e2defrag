@@ -48,33 +48,23 @@ static int __move_block_range(struct defrag_ctx *c, blk64_t from, blk64_t to,
 	return 0;
 }
 
-/* This function does not allocate the space, only move data into it. */
-int move_file_extent(struct defrag_ctx *c, struct inode *i,
-                     blk64_t logical_start, blk64_t new_start)
+/* TODO: should be replaced by a safe version that takes a struct allocation
+   as parameter to verify the extent fits (or at least take a free_extent */
+int move_data_extent(struct defrag_ctx *c, struct data_extent *extent_to_copy,
+                     blk64_t new_start)
 {
-	struct data_extent *extent_to_copy = NULL;
+	struct inode *i = c->inodes[extent_to_copy->inode_nr];
 	blk64_t old_start;
-	int j, ret;
 	e2_blkcnt_t blk_cnt;
-	for (j = 0; j < i->extent_count; j++) {
-		if (i->extents[j].start_logical == logical_start) {
-			extent_to_copy = &i->extents[j];
-			break;
-		}
-	}
-	if (!extent_to_copy) {
-		errno = EINVAL;
-		return -1;
-	}
+	int ret;
+
 	blk_cnt = extent_to_copy->end_block - extent_to_copy->start_block + 1;
 	ret = __move_block_range(c, extent_to_copy->start_block, new_start,
 	                         blk_cnt);
 	if (!ret)
 		ret = fdatasync(c->fd);
-	if (ret) {
-		deallocate_space(c, new_start, blk_cnt);
-		return -1;
-	}
+	if (ret)
+		return ret;
 	old_start = extent_to_copy->start_block;
 	extent_to_copy->start_block = new_start;
 	extent_to_copy->end_block = extent_to_copy->start_block + blk_cnt - 1;
@@ -92,9 +82,26 @@ int move_file_extent(struct defrag_ctx *c, struct inode *i,
 			return ret;
 		}
 	}
-	if (ret) {
-		/* TODO: graceful error handling */
+	return ret;
+}
+
+/* This function does not allocate the space, only move data into it. */
+int move_file_extent(struct defrag_ctx *c, struct inode *i,
+                     blk64_t logical_start, blk64_t new_start)
+{
+	struct data_extent *extent_to_copy = NULL;
+	int j, ret;
+	for (j = 0; j < i->extent_count; j++) {
+		if (i->extents[j].start_logical == logical_start) {
+			extent_to_copy = &i->extents[j];
+			break;
+		}
 	}
+	if (!extent_to_copy) {
+		errno = EINVAL;
+		return -1;
+	}
+	ret = move_data_extent(c, extent_to_copy, new_start);
 	return ret;
 }
 
