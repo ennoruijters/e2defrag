@@ -7,7 +7,8 @@ void dump_trees(struct defrag_ctx *c, int to_dump)
 	struct rb_node *n = rb_first(&c->free_tree_by_block);
 	while (n && (to_dump & 1)) {
 		struct free_extent *f = rb_entry(n, struct free_extent,block_rb);
-		printf("F: %llu-%llu\n", f->start_block, f->end_block);
+		printf("F: %llu-%llu (%llu)\n", f->start_block, f->end_block,
+		       f->end_block - f->start_block + 1);
 		n = rb_next(n);
 	}
 	n = rb_first(&c->extents_by_block);
