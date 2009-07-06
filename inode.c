@@ -16,6 +16,25 @@ static void inode_remove_from_trees(struct defrag_ctx *c, struct inode *inode)
 		rb_remove_data_extent(c, &inode->extents[i]);
 }
 
+int is_metadata(struct defrag_ctx *c, struct data_extent *extent)
+{
+	struct inode *inode;
+	int i;
+	inode = c->inodes[extent->inode_nr];
+
+	if (inode->metadata == NULL)
+		return 0;
+	/* Yes, I know this for loop is inefficient and could be replaced
+	   by simple pointer comparison, but that would cause undefined
+	   behaviour according to ISO C89 and C99, and most inodes
+	   don't have enough metadata for this to be a problem.
+	   */
+	for (i = 0; i < inode->metadata->extent_count; i++) {
+		if (extent == &inode->metadata->extents[i])
+			return 1;
+	}
+	return 0;
+}
 
 static struct sparse_extent *merge_sparse(struct sparse_extent *s1,
                                           struct sparse_extent *s2,

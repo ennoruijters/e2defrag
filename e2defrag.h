@@ -147,6 +147,7 @@ int split_extent(struct defrag_ctx *c, struct inode *inode,
                  struct data_extent *extent, blk64_t new_end_block);
 blk64_t get_physical_block(struct inode *inode, blk64_t logical_block,
                            int *extent_nr);
+int is_metadata(struct defrag_ctx *c, struct data_extent *extent);
 
 /* interactive.c */
 int move_extent_interactive(struct defrag_ctx *c);
