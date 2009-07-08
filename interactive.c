@@ -39,17 +39,22 @@ int defrag_file_interactive(struct defrag_ctx *c)
 		printf("Specify inode number (or -1 for free space consolidation, or 0 to exit): ");
 		scanf("%u", &inode_nr);
 		if (inode_nr == 0)
-			return 0;
+			return 1;
 		if (inode_nr == -1) {
 			ret = consolidate_free_space(c, 0);
 			if (ret)
 				printf("Error: %s\n", strerror(errno));
-			return ret;
+			if (ret && errno != ENOSPC)
+				return ret;
+			else
+				return 0;
 		}
 		if (inode_nr == -2) {
 			ret = 0;
 			while (!ret)
 				ret = consolidate_free_space(c, 0);
+			if (errno == ENOSPC)
+				return 0;
 			return ret;
 		}
 	} while (inode_nr < 11 || inode_nr > c->sb.s_inodes_count);
@@ -63,7 +68,10 @@ int defrag_file_interactive(struct defrag_ctx *c)
 		printf("Error: %s\n", strerror(errno));
 	printf("Inode now has %llu fragments\n",
 	       c->inodes[inode_nr]->extent_count);
-	return ret;
+	if (ret && errno != ENOSPC)
+		return ret;
+	else
+		return 0;
 }
 
 int move_file_interactive(struct defrag_ctx *c)

@@ -93,7 +93,9 @@ int main(int argc, char *argv[])
 #ifndef NDEBUG
 	dump_trees(disk, 3);
 #endif
-	defrag_file_interactive(disk);
+	ret = 0;
+	while (!ret)
+		ret = defrag_file_interactive(disk);
 	close_drive(disk);
 	return 0;
 }
