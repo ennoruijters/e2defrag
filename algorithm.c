@@ -64,15 +64,6 @@ static int try_pack_extent(struct defrag_ctx *c, struct data_extent *data,
 	e2_blkcnt_t min_size, max_size;
 	int ret;
 
-	if (is_metadata(c, data)) {
-		/* Hack, because using normal block moves to move metadata
-		   can segfault. Including this breaks the termination
-		   requirement, so this should be replaced by a proper metadata
-		   moving routine as soon as possible.
-		   */
-		return write_extent_metadata(c, data);
-	}
-	
 	min_size = data->end_block - data->start_block + 1;
 	/* Don't add 1 to max_size (or rather, subtract one from the final
 	   result, so we actually gain something by moving */
@@ -109,7 +100,10 @@ static int try_pack_extent(struct defrag_ctx *c, struct data_extent *data,
 	                     data->end_block - data->start_block + 1);
 	if (ret)
 		return -1;
-	ret = move_data_extent(c, data, new_start);
+	if (is_metadata(c, data))
+		ret = move_metadata_extent(c, data, new_start);
+	else
+		ret = move_data_extent(c, data, new_start);
 	return ret;
 }
 

@@ -20,6 +20,12 @@
 	((index)->ei_leaf = ((block) & 0xFFFFFFFF), \
 	 (index)->ei_leaf_hi = ((block) >> 32))
 
+#define EE_BLOCK(extent) \
+	((extent)->ee_start + (((blk64_t) ((extent)->ee_start_hi)) >> 32))
+
+#define EI_BLOCK(idx) \
+	((idx)->ei_leaf + (((blk64_t) ((idx)->ei_leaf_hi)) >> 32))
+
 #define EXT_PER_BLOCK(sb) \
 	((EXT2_BLOCK_SIZE(sb) - sizeof(struct ext3_extent_header)) \
 	 / sizeof(struct ext3_extent))
@@ -340,6 +346,103 @@ static e2_blkcnt_t calc_num_indexes(struct defrag_ctx *c, e2_blkcnt_t nextents)
 		nextents /= EXT_PER_BLOCK(&c->sb);
 	}
 	return ret;
+}
+
+static int update_metadata_move(struct defrag_ctx *c, struct inode *inode,
+                                blk64_t from, blk64_t to, __u32 logical,
+				blk64_t at_block)
+{
+	int ret = 0;
+	struct ext3_extent_header *header;
+	struct ext3_extent_idx *idx;
+	if (at_block == 0) {
+		header = &inode->on_disk->extents.hdr;
+	} else {
+		header = malloc(EXT2_BLOCK_SIZE(&c->sb));
+		ret = read_block(c, header, at_block);
+		if (ret)
+			goto out_noupdate;
+	}
+	if (!header->eh_depth) {
+		errno = EINVAL;
+		goto out_noupdate;
+	}
+	for (idx = EXT_FIRST_INDEX(header);
+	     idx <= EXT_LAST_INDEX(header); idx++) {
+		if (idx->ei_block > logical) {
+			errno = EINVAL;
+			goto out_noupdate;
+		} if (idx->ei_block == logical && EI_BLOCK(idx) == from) {
+			EI_LEAF_SET(idx, to);
+			goto out_update;
+		}
+		if (idx + 1 == EXT_LAST_INDEX(header) ||
+		    (idx + 1)->ei_block > logical) {
+			ret = update_metadata_move(c, inode, from, to, logical,
+			                           EI_BLOCK(idx));
+			goto out_noupdate;
+		}
+	}
+	errno = EINVAL;
+	goto out_noupdate;
+
+out_update:
+	if (at_block) {
+		ret = write_block(c, header, at_block);
+	} else {
+		ret = msync(PAGE_START(header), getpagesize(), MS_SYNC);
+	}
+out_noupdate:
+	if (at_block)
+		free(header);
+	return ret;
+}
+
+static int move_metadata_block(struct defrag_ctx *c, struct inode *inode,
+                               blk64_t from, blk64_t to)
+{
+	struct ext3_extent_header *header = malloc(EXT2_BLOCK_SIZE(&c->sb));
+	/* Whether it's a leaf or an index doesn't matter for the logical
+	   block address */
+	struct ext3_extent *extents = (void *)(header + 1);
+	__u32 logical_block;
+	int ret;
+
+	ret = read_block(c, header, from);
+	if (ret)
+		goto out_error;
+	ret = write_block(c, header, to);
+	if (ret)
+		goto out_error;
+	logical_block = extents->ee_block;
+	free(header);
+	return update_metadata_move(c, inode, from, to, logical_block, 0);
+
+out_error:
+	free(header);
+	return ret;
+}
+
+int move_metadata_extent(struct defrag_ctx *c, struct data_extent *extent,
+                         blk64_t target)
+{
+	struct inode *inode = c->inodes[extent->inode_nr];
+	blk64_t old_target, i;
+	int ret;
+	old_target = target;
+	rb_remove_data_extent(c, extent);
+	for (i = extent->start_block; i != extent->end_block + 1; i++) {
+		ret = move_metadata_block(c, inode, i, target++);
+		if (ret)
+			return ret;
+	}
+	ret = deallocate_space(c, extent->start_block,
+	                       extent->end_block - extent->start_block + 1);
+	extent->end_block -= extent->start_block;
+	extent->start_block = old_target;
+	extent->end_block += extent->start_block;
+	insert_data_extent(c, extent);
+	return 0;
 }
 
 static int write_extent_block(struct defrag_ctx *c, blk64_t block,

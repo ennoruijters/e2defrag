@@ -161,8 +161,10 @@ int write_block(struct defrag_ctx *c, void *buf, blk64_t block);
 int set_e2_filesystem_data(struct defrag_ctx *c);
 void close_drive(struct defrag_ctx *c);
 
-/* metadata_writeback.c */
+/* metadata_write.c */
 int write_extent_metadata(struct defrag_ctx *c, struct data_extent *e);
+int move_metadata_extent(struct defrag_ctx *c, struct data_extent *extent,
+                         blk64_t target);
 
 /* metadata_read.c */
 long parse_inode(struct defrag_ctx *c, ext2_ino_t inode_nr,
