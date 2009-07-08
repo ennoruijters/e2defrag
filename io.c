@@ -265,7 +265,7 @@ long parse_free_bitmap(struct defrag_ctx *c, blk64_t bitmap_block,
 	size_t map_length;
 	blk64_t first_block = group_nr * c->sb.s_blocks_per_group;
 	first_block += c->sb.s_first_data_block;
-	struct free_extent *free_extent = NULL;
+	struct free_extent *free_extent;
 	struct data_extent *file_extent = NULL;
 	long count = 0;
 	int i;
@@ -288,6 +288,9 @@ long parse_free_bitmap(struct defrag_ctx *c, blk64_t bitmap_block,
 	c->bg_maps[group_nr].bitmap_map_length = map_length;
 	c->bg_maps[group_nr].bitmap_offset = delta_offset;
 
+	free_extent = containing_free_extent(c, first_block - 1);
+	if (free_extent)
+		rb_remove_free_extent(c, free_extent);
 	for (i = 0; i < c->sb.s_blocks_per_group; i += CHAR_BIT) {
 		int j;
 		unsigned char mask = 1;
