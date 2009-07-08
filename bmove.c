@@ -66,8 +66,10 @@ int move_data_extent(struct defrag_ctx *c, struct data_extent *extent_to_copy,
 	if (ret)
 		return ret;
 	old_start = extent_to_copy->start_block;
+	rb_remove_data_extent(c, extent_to_copy);
 	extent_to_copy->start_block = new_start;
 	extent_to_copy->end_block = extent_to_copy->start_block + blk_cnt - 1;
+	insert_data_extent(c, extent_to_copy);
 	ret = write_extent_metadata(c, extent_to_copy);
 	if (!ret) {
 		ret = deallocate_space(c, old_start, blk_cnt);
