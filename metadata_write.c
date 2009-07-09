@@ -376,7 +376,7 @@ static int update_metadata_move(struct defrag_ctx *c, struct inode *inode,
 			EI_LEAF_SET(idx, to);
 			goto out_update;
 		}
-		if (idx + 1 == EXT_LAST_INDEX(header) ||
+		if (idx + 1 > EXT_LAST_INDEX(header) ||
 		    (idx + 1)->ei_block > logical) {
 			ret = update_metadata_move(c, inode, from, to, logical,
 			                           EI_BLOCK(idx));
