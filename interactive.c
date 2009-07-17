@@ -27,14 +27,23 @@ static void print_fragged_inodes(const struct defrag_ctx *c)
 
 int defrag_file_interactive(struct defrag_ctx *c)
 {
-	struct free_extent *f = rb_entry(rb_last(&c->free_tree_by_size),
-	                                 struct free_extent, size_rb);
+	struct rb_node *n = rb_last(&c->free_tree_by_size);
+	struct free_extent *f = rb_entry(n, struct free_extent, size_rb);
 	struct inode *inode;
-	int ret;
+	e2_blkcnt_t biggest_size = 0;
+	int ret, num_biggest = 0;
 	ext2_ino_t inode_nr;
 
 	print_fragged_inodes(c);
-	printf("Biggest free space: %llu blocks\n", f->end_block - f->start_block + 1);
+	if (n)
+		biggest_size = f->end_block - f->start_block + 1;
+	while (n && biggest_size == f->end_block - f->start_block + 1) {
+		num_biggest++;
+		n = rb_prev(n);
+		f = rb_entry(n, struct free_extent, size_rb);
+	}
+	printf("Biggest free space: %llu blocks (%d)\n", biggest_size,
+	       num_biggest);
 	do {
 		printf("Specify inode number (or -1 for free space consolidation, or 0 to exit): ");
 		scanf("%u", &inode_nr);
