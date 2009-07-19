@@ -38,9 +38,9 @@ static int is_sparse(struct data_extent *e, blk64_t lblock)
 	if (!s)
 		return 0;
 	while (s->start) {
-		if (s->start >= lblock && s->start + s->num_blocks <= lblock)
+		if (s->start <= lblock && s->start + s->num_blocks-1 >= lblock)
 			return 1;
-		if (s->start + s->num_blocks > lblock)
+		if (s->start + s->num_blocks - 1 > lblock)
 			return 0;
 		s++;
 	}
@@ -229,8 +229,10 @@ static int write_direct_mapping(struct defrag_ctx *c, struct data_extent *e)
 	int sync_inode = 0;
 
 	/* Direct blocks */
-	for (; cur_logical < EXT2_IND_LBLOCK(&c->sb); cur_logical++) {
-		if (!is_sparse(e, cur_logical) && cur_block <= e->end_block)
+	for (cur_logical = e->start_logical;
+	     cur_logical < EXT2_IND_LBLOCK(&c->sb) && cur_block <= e->end_block;
+	     cur_logical++) {
+		if (!is_sparse(e, cur_logical))
 			new_block = cur_block++;
 		else
 			new_block = 0;
@@ -239,10 +241,12 @@ static int write_direct_mapping(struct defrag_ctx *c, struct data_extent *e)
 			sync_inode = 1;
 		}
 	}
+	if (cur_block > e->end_block)
+		goto out;
 
 	/* Singly indirect blocks */
 	if (cur_logical == EXT2_IND_LBLOCK(&c->sb)) {
-		if (is_sparse(e, cur_logical) || cur_block > e->end_block)
+		if (is_sparse(e, cur_logical))
 			new_block = 0;
 		else
 			new_block = cur_block++;
@@ -258,6 +262,8 @@ static int write_direct_mapping(struct defrag_ctx *c, struct data_extent *e)
 		inode->on_disk->i_block[EXT2_IND_BLOCK] = new_block;
 		sync_inode = 1;
 	}
+	if (cur_block > e->end_block)
+		goto out;
 
 	/* Doubly indirect blocks */
 	if (cur_logical == EXT2_DIND_LBLOCK(&c->sb)) {
@@ -277,6 +283,8 @@ static int write_direct_mapping(struct defrag_ctx *c, struct data_extent *e)
 		inode->on_disk->i_block[EXT2_DIND_BLOCK] = new_block;
 		sync_inode = 1;
 	}
+	if (cur_block > e->end_block)
+		goto out;
 
 	/* Triply indirect blocks */
 	if (cur_logical == EXT2_TIND_LBLOCK(&c->sb)) {
@@ -296,6 +304,7 @@ static int write_direct_mapping(struct defrag_ctx *c, struct data_extent *e)
 		sync_inode = 1;
 	}
 
+out:
 	if (sync_inode)
 		/* Assumes the inode is completely within one page */
 		return msync(PAGE_START(inode->on_disk),getpagesize(), MS_SYNC);
