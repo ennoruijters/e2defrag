@@ -15,8 +15,9 @@ static void print_fragged_inodes(const struct defrag_ctx *c)
 		if (!inode)
 			continue;
 		if (inode->extent_count > 1)
-			printf("Inode %u: %llu fragments (%llu blocks)\n",
-			       i, inode->extent_count, inode->block_count);
+			printf("Inode %u%s: %llu fragments (%llu blocks)\n",
+			       i, inode->metadata ? "" : "*",
+			       inode->extent_count, inode->block_count);
 		if (inode->metadata && inode->metadata->extent_count > 1)
 			printf("Metadata for inode %u: %llu fragments "
 			       "(%llu blocks)\n",
