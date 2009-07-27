@@ -164,7 +164,7 @@ int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr, int silent)
 {
 	struct inode *inode;
 	struct allocation *target;
-	int ret;
+	int ret = 0, answer = 0;
 
 	inode = c->inodes[inode_nr];
 	errno = 0;
@@ -185,7 +185,21 @@ int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr, int silent)
 		else
 			return 1;
 	}
-	ret = move_inode_data(c, inode, target);
+	while (!answer) {
+		printf("Possible allocation has %llu fragments. Continue? ",
+		       target->extent_count);
+		answer = getchar();
+		if (answer != 'y' && answer != 'Y' && answer != 'n' &&
+		    answer != 'N' && answer != EOF)
+			answer = 0;
+		while (ret != '\n')
+			ret = getchar();
+	}
+	if (answer == 'y' || answer == 'Y') {
+		ret = move_inode_data(c, inode, target);
+	} else {
+		ret = deallocate_blocks(c, target);
+	}
 	free(target);
 	return ret;
 }
