@@ -41,6 +41,21 @@ static void print_fragged_inodes(const struct defrag_ctx *c)
 {
 	ext2_ino_t i;
 	ext2_ino_t nr_inodes = ext2_inodes_on_disk(&c->sb);
+	e2_blkcnt_t free_blocks = 0;
+	long free_extents = 0;
+	struct rb_node *n;
+
+	n = rb_first(&c->free_tree_by_block);
+	while (n) {
+		struct free_extent *extent;
+		extent = rb_entry(n, struct free_extent, block_rb);
+		free_extents++;
+		free_blocks += extent->end_block - extent->start_block + 1;
+		n = rb_next(n);
+	}
+	printf("Free space: %ld fragments (%llu blocks)\n",
+	       free_extents, free_blocks);
+
 	for (i = 0; i < nr_inodes; i++) {
 		const struct inode *inode = c->inodes[i];
 		if (!inode)
