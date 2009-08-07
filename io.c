@@ -9,6 +9,7 @@
 #include <sys/mman.h>
 #include "e2defrag.h"
 #include "extree.h"
+#include "crc16.h"
 
 int read_block(struct defrag_ctx *c, void *buf, blk64_t block)
 {
@@ -257,6 +258,64 @@ void close_drive(struct defrag_ctx *c)
 	free(c);
 }
 
+long add_uninit_bg(struct defrag_ctx *c, struct ext2_group_desc *gd,
+                   uint32_t group_nr)
+{
+	unsigned char bitmap[EXT2_BLOCK_SIZE(&c->sb)];
+	blk64_t first_block = group_nr * c->sb.s_blocks_per_group;
+	first_block += c->sb.s_first_data_block;
+	blk64_t last_block = first_block + c->sb.s_blocks_per_group - 1;
+	blk64_t block;
+	int byte, bit, num_inode_blocks, ret;
+	memset(bitmap, 0, EXT2_BLOCK_SIZE(&c->sb));
+	block = gd->bg_inode_bitmap;
+	if (block >= first_block && block <= last_block) {
+		block -= first_block;
+		byte = block / 8;
+		bit = block % 8;
+		bitmap[byte] |= 1 << bit;
+	}
+	block = gd->bg_inode_table;
+	if (block >= first_block && block <= last_block) {
+		block -= first_block;
+		byte = block / 8;
+		bit = block % 8;
+		num_inode_blocks = EXT2_INODES_PER_GROUP(&c->sb) /
+	                                          EXT2_INODES_PER_BLOCK(&c->sb);
+		while (num_inode_blocks) {
+			bitmap[byte] |= 1 << bit;
+			bit++;
+			if (bit == 8) {
+				bit = 0;
+				byte++;
+			}
+			num_inode_blocks--;
+		}
+	}
+	ret = write_block(c, bitmap, gd->bg_block_bitmap);
+	if (ret)
+		return ret;
+	ret = fsync(c->fd);
+	gd->bg_flags &= ~EXT2_BG_BLOCK_UNINIT;
+	if (c->sb.s_rev_level != EXT2_GOOD_OLD_REV) {
+		char *offset;
+		int size;
+		uint16_t crc;
+		crc = crc16(~0, c->sb.s_uuid, sizeof(c->sb.s_uuid));
+		crc = crc16(crc, (void *)&group_nr, sizeof(group_nr));
+		crc = crc16(crc, (void *)gd,
+		            offsetof(struct ext4_group_desc, bg_checksum));
+		offset = (char *)&gd->bg_checksum;
+		offset += sizeof(crc);
+		size = EXT2_DESC_SIZE(&c->sb);
+		size -= offsetof(struct ext4_group_desc, bg_checksum);
+		size -= sizeof(crc);
+		crc = crc16(crc, (void *)offset, size);
+		gd->bg_checksum = crc;
+	}
+	return 0;
+}
+
 long parse_free_bitmap(struct defrag_ctx *c, blk64_t bitmap_block,
                        int group_nr)
 {
@@ -281,8 +340,10 @@ long parse_free_bitmap(struct defrag_ctx *c, blk64_t bitmap_block,
 	i = global_settings.simulate ? MAP_PRIVATE : MAP_SHARED;
 	bitmap = mmap(NULL, map_length, PROT_READ | PROT_WRITE, i,
 	              c->fd, start_offset);
-	if (bitmap == MAP_FAILED)
+	if (bitmap == MAP_FAILED) {
+		fprintf(stderr, "Could not map bitmap");
 		return -1;
+	}
 	bitmap += delta_offset;
 	c->bg_maps[group_nr].bitmap = bitmap;
 	c->bg_maps[group_nr].bitmap_map_length = map_length;
@@ -367,8 +428,16 @@ int set_e2_filesystem_data(struct defrag_ctx *c)
 
 	for (i = 0; i < num_block_groups; i++) {
 		long ret = 0;
-		if (!(gds[i].bg_flags & EXT2_BG_BLOCK_UNINIT))
+		if (!(gds[i].bg_flags & EXT2_BG_BLOCK_UNINIT)) {
 			ret = parse_free_bitmap(c, gds[i].bg_block_bitmap, i);
+		} else {
+			ret = add_uninit_bg(c, &gds[i], i);
+			if (!ret) {
+				ret = parse_free_bitmap(c,
+				                        gds[i].bg_block_bitmap,
+				                        i);
+			}
+		}
 		if (ret < 0)
 			return -1;
 	}
