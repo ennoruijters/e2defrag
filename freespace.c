@@ -6,11 +6,15 @@
 #include "e2defrag.h"
 #include "extree.h"
 
-int allocate_space(struct defrag_ctx *c,
-                   blk64_t start, e2_blkcnt_t numblocks)
+static int allocate_space(struct defrag_ctx *c,
+                          blk64_t start, e2_blkcnt_t numblocks)
 {
 	struct free_extent *extent;
 	extent = containing_free_extent(c, start);
+	if (!extent || extent->end_block < start + numblocks - 1) {
+		errno = ENOSPC;
+		return -1;
+	}
 	if (start == extent->start_block) {
 		rb_remove_free_extent(c, extent);
 		extent->start_block += numblocks;
@@ -93,12 +97,14 @@ int deallocate_space(struct defrag_ctx *c, blk64_t start, e2_blkcnt_t numblocks)
 	return 0;
 }
 
+/* Note: also frees the allocation, even on errors */
 int deallocate_blocks(struct defrag_ctx *c, struct allocation *space)
 {
 	int i, ret = 0;
 	for (i = 0; i < space->extent_count; i++) {
 		e2_blkcnt_t num_blocks = 1 + space->extents[i].end_block
 		                         - space->extents[i].start_block;
+		rb_remove_data_extent(c, &space->extents[i]);
 		if (ret >= 0)
 			ret = deallocate_space(c, space->extents[i].start_block,
 		                               num_blocks);
@@ -106,11 +112,13 @@ int deallocate_blocks(struct defrag_ctx *c, struct allocation *space)
 			deallocate_space(c, space->extents[i].start_block,
 		                         num_blocks);
 	}
+	free(space);
 	return ret < 0 ? ret : 0;
 }
 
-void optimize_allocation(struct rb_node **nodes, e2_blkcnt_t *num_allocated,
-                         e2_blkcnt_t num_blocks, int num_extents)
+static void optimize_allocation(struct rb_node **nodes,
+                                e2_blkcnt_t *num_allocated,
+                                e2_blkcnt_t num_blocks, int num_extents)
 {
 	int i;
 
@@ -147,8 +155,10 @@ void optimize_allocation(struct rb_node **nodes, e2_blkcnt_t *num_allocated,
 	return;
 }
 
-struct rb_node **simple_allocator(struct defrag_ctx *c, e2_blkcnt_t num_blocks,
-                                  e2_blkcnt_t *allocated_blocks, int *extents)
+static struct rb_node **simple_allocator(struct defrag_ctx *c,
+                                         e2_blkcnt_t num_blocks,
+                                         e2_blkcnt_t *allocated_blocks,
+                                         int *extents)
 {
 	struct obstack stack;
 	struct rb_node *n = rb_last(&c->free_tree_by_size);
@@ -188,13 +198,40 @@ struct rb_node **simple_allocator(struct defrag_ctx *c, e2_blkcnt_t num_blocks,
 	return ret;
 }
 
-struct allocation *allocate_blocks(struct defrag_ctx *c, e2_blkcnt_t num_blocks,
-                                   ext2_ino_t inode_nr, blk64_t first_logical)
+int allocate(struct defrag_ctx *c, struct allocation *space)
+{
+	int i;
+	struct data_extent *extent;
+	for (i = 0; i < space->extent_count; i++) {
+		e2_blkcnt_t num_blocks;
+		int tmp;
+		extent = &space->extents[i];
+		num_blocks = extent->end_block - extent->start_block + 1;
+		tmp = allocate_space(c, extent->start_block, num_blocks);
+		if (tmp < 0)
+			goto out_dealloc;
+		insert_data_extent(c, extent);
+	}
+	return 0;
+
+out_dealloc:
+	for (i = i - 1; i >= 0; i--) {
+		e2_blkcnt_t num_blocks;
+		extent = &space->extents[i];
+		num_blocks = extent->end_block - extent->start_block + 1;
+		deallocate_space(c, extent->start_block, num_blocks);
+		rb_remove_data_extent(c, extent);
+	}
+	return -1;
+}
+
+struct allocation *get_blocks(struct defrag_ctx *c, e2_blkcnt_t num_blocks,
+                              ext2_ino_t inode_nr, blk64_t first_logical)
 {
 	struct allocation *ret;
 	struct rb_node **nodes;
 	e2_blkcnt_t num_allocated;
-	int num_extents, tmp, i;
+	int num_extents, i;
 
 	nodes = simple_allocator(c, num_blocks, &num_allocated, &num_extents);
 	if (nodes == NULL)
@@ -222,33 +259,13 @@ struct allocation *allocate_blocks(struct defrag_ctx *c, e2_blkcnt_t num_blocks,
 		extent_num_blocks = extent->end_block - extent->start_block + 1;
 		if (extent_num_blocks > num_blocks) {
 			ret->extents[i].end_block += num_blocks;
-			tmp = allocate_space(c, ret->extents[i].start_block,
-			                     num_blocks);
 			num_blocks = 0;
-			if (tmp < 0)
-				goto error_dealloc;
 		} else {
 			ret->extents[i].end_block += extent_num_blocks;
 			num_blocks -= extent_num_blocks;
 			first_logical += extent_num_blocks;
-			tmp = allocate_space(c, ret->extents[i].start_block,
-			                     extent_num_blocks);
-			if (tmp < 0)
-				goto error_dealloc;
 		}
 	}
 	free(nodes);
 	return ret;
-
-error_dealloc:
-	; /* null statement because labels cannot precede declarations */
-	int j;
-	for (j = 0; j < i; j++) {
-		num_blocks = ret->extents[j].end_block + 1;
-		num_blocks -= ret->extents[j].start_block;
-		deallocate_space(c, ret->extents[j].start_block, num_blocks);
-	}
-	free(ret);
-	free(nodes);
-	return NULL;
 }

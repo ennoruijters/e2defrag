@@ -60,6 +60,7 @@ static int try_pack_extent(struct defrag_ctx *c, struct data_extent *data,
                            struct free_extent *away_from, int silent)
 {
 	struct free_extent *target;
+	struct allocation *new_alloc;
 	blk64_t new_start;
 	e2_blkcnt_t min_size, max_size;
 	int ret;
@@ -96,14 +97,27 @@ static int try_pack_extent(struct defrag_ctx *c, struct data_extent *data,
 		       data->start_block, data->inode_nr, 
 		       data->end_block - data->start_block + 1, new_start);
 	}
-	ret = allocate_space(c, target->start_block,
-	                     data->end_block - data->start_block + 1);
-	if (ret)
+	new_alloc = malloc(sizeof(struct allocation) + sizeof(struct data_extent));
+	if (!new_alloc)
 		return -1;
+	new_alloc->block_count = data->end_block - data->start_block + 1;
+	new_alloc->extent_count = 1;
+	new_alloc->extents[0].start_block = target->start_block;
+	new_alloc->extents[0].end_block = target->start_block;
+	new_alloc->extents[0].end_block += data->end_block - data->start_block;
+	new_alloc->extents[0].start_logical = data->start_logical;
+	new_alloc->extents[0].sparse = NULL;
+	new_alloc->extents[0].inode_nr = data->inode_nr;
+	ret = allocate(c, new_alloc);
+	if (ret) {
+		free(new_alloc);
+		return -1;
+	}
 	if (is_metadata(c, data))
-		ret = move_metadata_extent(c, data, new_start);
+		ret = move_metadata_extent(c, data, new_alloc);
 	else
-		ret = move_data_extent(c, data, new_start);
+		ret = move_data_extent(c, data, new_alloc);
+	free(new_alloc);
 	return ret;
 }
 
@@ -168,17 +182,16 @@ int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr, int silent)
 
 	inode = c->inodes[inode_nr];
 	errno = 0;
-	target = allocate_blocks(c, inode->block_count, inode_nr, 0);
+	target = get_blocks(c, inode->data->block_count, inode_nr, 0);
 	if (!target) {
 		if (errno)
 			return -1;
 		else
 			return 1;
 	}
-	if (target->extent_count >= inode->extent_count) {
+	if (target->extent_count >= inode->data->extent_count) {
 		if (!silent)
 			printf("No better placement possible: best new placement has %llu fragments\n", target->extent_count);
-		ret = deallocate_blocks(c, target);
 		free(target);
 		if (ret < 0)
 			return ret;
@@ -195,11 +208,23 @@ int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr, int silent)
 		while (ret != '\n')
 			ret = getchar();
 	}
-	if (answer == 'y' || answer == 'Y') {
-		ret = move_inode_data(c, inode, target);
-	} else {
-		ret = deallocate_blocks(c, target);
+	ret = allocate(c, target);
+	if (ret < 0) {
+		free(target);
+		return ret;
 	}
-	free(target);
+	if (answer == 'y' || answer == 'Y') {
+		ret = copy_data(c, inode->data, target);
+		if (!ret) {
+			ret = deallocate_blocks(c, inode->data);
+			inode->data = target;
+			if (!ret)
+				ret = write_inode_metadata(c, inode);
+			else
+				write_inode_metadata(c, inode);
+		} else {
+			deallocate_blocks(c, target);
+		}
+	}
 	return ret;
 }

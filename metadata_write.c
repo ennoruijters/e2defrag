@@ -433,22 +433,33 @@ out_error:
 }
 
 int move_metadata_extent(struct defrag_ctx *c, struct data_extent *extent,
-                         blk64_t target)
+                         struct allocation *target)
 {
 	struct inode *inode = c->inodes[extent->inode_nr];
-	blk64_t old_target, i;
+	blk64_t target_block, i;
 	int ret;
-	old_target = target;
+	if (target->extent_count > 1) {
+		errno = ENOSYS;
+		return -1;
+	}
+	if (target->extents[0].end_block - target->extents[0].start_block !=
+	    extent->end_block - extent->start_block)
+	{
+		errno = ENOSPC;
+		return -1;
+	}
+	target_block = target->extents[0].start_block;
 	rb_remove_data_extent(c, extent);
+	rb_remove_data_extent(c, &target->extents[0]);
 	for (i = extent->start_block; i != extent->end_block + 1; i++) {
-		ret = move_metadata_block(c, inode, i, target++);
+		ret = move_metadata_block(c, inode, i, target_block);
 		if (ret)
 			return ret;
 	}
 	ret = deallocate_space(c, extent->start_block,
 	                       extent->end_block - extent->start_block + 1);
 	extent->end_block -= extent->start_block;
-	extent->start_block = old_target;
+	extent->start_block = target->extents[0].start_block;
 	extent->end_block += extent->start_block;
 	insert_data_extent(c, extent);
 	return 0;
@@ -555,9 +566,9 @@ void update_inode_block_count(struct defrag_ctx *c, struct inode *inode,
 	struct ext2_inode *on_disk;
 	if (inode->metadata->block_count == new->block_count)
 		return;
-	assert(inode->extent_count); /* Otherwise why would we be writing
-					metadata? */
-	inode_nr = inode->extents[0].inode_nr - 1;
+	assert(inode->data->extent_count); /* Otherwise why would we be writing
+	                                      metadata? */
+	inode_nr = inode->data->extents[0].inode_nr - 1;
 	group_nr = inode_nr / EXT2_INODES_PER_GROUP(&c->sb);
 	map = c->bg_maps[group_nr].map_start;
 	map += (inode_nr % EXT2_INODES_PER_GROUP(&c->sb)) * EXT2_INODE_SIZE(&c->sb);
@@ -580,19 +591,21 @@ int write_extent_mapping(struct defrag_ctx *c, struct inode *inode)
 	int i, ret, depth = 0;
 
 	obstack_init(&mempool);
-	for (i = 0; i < inode->extent_count; i++)
-		extent_to_ext3_extent(inode->extents + i, &mempool);
+	for (i = 0; i < inode->data->extent_count; i++)
+		extent_to_ext3_extent(inode->data->extents + i, &mempool);
 	num_extents = obstack_object_size(&mempool) / sizeof(*leaves);
 	leaves = obstack_finish(&mempool);
 	if (num_extents > 4) {
-		ext2_ino_t inode_nr = inode->extents[0].inode_nr;
+		ext2_ino_t inode_nr = inode->data->extents[0].inode_nr;
 		num_indexes = calc_num_indexes(c, num_extents);
 		num_blocks = num_indexes + num_extents / EXT_PER_BLOCK(&c->sb);
 		if (num_extents % EXT_PER_BLOCK(&c->sb))
 			num_blocks++;
-		new_metadata_blocks = allocate_blocks(c, num_blocks, inode_nr,
-		                                      0);
+		new_metadata_blocks = get_blocks(c, num_blocks, inode_nr, 0);
 		if (new_metadata_blocks == NULL)
+			return -1;
+		ret = allocate(c, new_metadata_blocks);
+		if (ret < 0)
 			return -1;
 		assert(depth == 0);
 		ret = writeout_extents(c, leaves, new_metadata_blocks,
@@ -604,36 +617,25 @@ int write_extent_mapping(struct defrag_ctx *c, struct inode *inode)
 		num_extents = obstack_object_size(&mempool) / sizeof(*leaves);
 		leaves = obstack_finish(&mempool);
 	} else {
-		depth = 0;
-		if (inode->metadata->block_count) {
-			new_metadata_blocks = malloc(sizeof(*inode->metadata));
-			if (!new_metadata_blocks) {
-				ret = -1;
-				goto error_out;
-			}
-			new_metadata_blocks->block_count = 0;
-			new_metadata_blocks->extent_count = 0;
-		} else {
-			new_metadata_blocks = inode->metadata;
+		new_metadata_blocks = malloc(sizeof(*inode->metadata));
+		if (!new_metadata_blocks) {
+			ret = -1;
+			goto error_out;
 		}
+		new_metadata_blocks->block_count = 0;
+		new_metadata_blocks->extent_count = 0;
 	}
 	fdatasync(c->fd);
 	ret = update_inode_extents(inode, leaves, num_extents, depth);
 	if (ret < 0) {
-		if (new_metadata_blocks != inode->metadata)
+		if (new_metadata_blocks)
 			deallocate_blocks(c, new_metadata_blocks);
 		goto error_out;
 	}
 	update_inode_block_count(c, inode, new_metadata_blocks);
-	if (inode->metadata != new_metadata_blocks) {
-		for (i = 0; i < inode->metadata->extent_count; i++)
-			rb_remove_data_extent(c, inode->metadata->extents + i);
+	if (inode->metadata)
 		deallocate_blocks(c, inode->metadata);
-		free(inode->metadata);
-		inode->metadata = new_metadata_blocks;
-		for (i = 0; i < inode->metadata->extent_count; i++)
-			insert_data_extent(c, inode->metadata->extents + i);
-	}
+	inode->metadata = new_metadata_blocks;
 	ret = 0;
 
 error_out:
@@ -645,9 +647,21 @@ int write_extent_metadata(struct defrag_ctx *c, struct data_extent *e)
 {
 	struct inode *inode = c->inodes[e->inode_nr];
 
-	if (inode->metadata) {
+	if (inode->metadata) { /* TODO: possibly redundant check, remove? */
 		return write_extent_mapping(c, inode);
 	} else {
 		return write_direct_mapping(c, e);
+	}
+}
+
+int write_inode_metadata(struct defrag_ctx *c, struct inode *inode)
+{
+	if (inode->metadata) {
+		return write_extent_mapping(c, inode);
+	} else {
+		int i, ret = 0;
+		for (i = 0; i < inode->data->extent_count && !ret; i++)
+			ret = write_direct_mapping(c, &inode->data->extents[i]);
+		return ret;
 	}
 }

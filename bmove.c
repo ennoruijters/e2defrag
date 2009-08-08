@@ -48,27 +48,38 @@ static int __move_block_range(struct defrag_ctx *c, blk64_t from, blk64_t to,
 	return 0;
 }
 
-/* TODO: should be replaced by a safe version that takes a struct allocation
-   as parameter to verify the extent fits (or at least take a free_extent */
+/* Target must have exactly one extent (for now) and exactly as many blocks
+   as the source extent. Target is no longer valid afterwards and must be
+   cleaned up by the caller. */
 int move_data_extent(struct defrag_ctx *c, struct data_extent *extent_to_copy,
-                     blk64_t new_start)
+                     struct allocation *target)
 {
 	struct inode *i = c->inodes[extent_to_copy->inode_nr];
 	blk64_t old_start;
 	e2_blkcnt_t blk_cnt;
 	int ret;
 
+	if (target->extent_count > 1) {
+		errno = ENOSYS;
+		return -1;
+	}
 	blk_cnt = extent_to_copy->end_block - extent_to_copy->start_block + 1;
-	ret = __move_block_range(c, extent_to_copy->start_block, new_start,
-	                         blk_cnt);
+	if (blk_cnt != target->extents[0].end_block -
+	               target->extents[0].start_block + 1)
+	{
+		errno = EINVAL;
+		return -1;
+	}
+	ret = __move_block_range(c, extent_to_copy->start_block,
+	                         target->extents[0].start_block, blk_cnt);
 	if (!ret)
 		ret = fdatasync(c->fd);
 	if (ret)
 		return ret;
+	rb_remove_data_extent(c, &target->extents[0]);
 	old_start = extent_to_copy->start_block;
 	rb_remove_data_extent(c, extent_to_copy);
-	extent_to_copy->start_block = new_start;
-	extent_to_copy->end_block = extent_to_copy->start_block + blk_cnt - 1;
+	*extent_to_copy = target->extents[0];
 	insert_data_extent(c, extent_to_copy);
 	ret = write_extent_metadata(c, extent_to_copy);
 	if (!ret) {
@@ -87,139 +98,49 @@ int move_data_extent(struct defrag_ctx *c, struct data_extent *extent_to_copy,
 	return ret;
 }
 
-/* This function does not allocate the space, only move data into it. */
-int move_file_extent(struct defrag_ctx *c, struct inode *i,
-                     blk64_t logical_start, blk64_t new_start)
+int copy_data(struct defrag_ctx *c, struct allocation *from,
+              struct allocation *target)
 {
-	struct data_extent *extent_to_copy = NULL;
-	int j, ret;
-	for (j = 0; j < i->extent_count; j++) {
-		if (i->extents[j].start_logical == logical_start) {
-			extent_to_copy = &i->extents[j];
-			break;
-		}
-	}
-	if (!extent_to_copy) {
+	struct data_extent *from_extent, *to_extent;
+	blk64_t cur_dest, cur_from;
+	e2_blkcnt_t blocks_copied = 0;
+
+	if (from->block_count != target->block_count) {
 		errno = EINVAL;
-		return -1;
+		return 0;
 	}
-	ret = move_data_extent(c, extent_to_copy, new_start);
-	return ret;
-}
 
-/* Move 'numblocks' blocks of the file with inode 'inode_nr' to block number
- * 'dest', starting from the logical block 'from'
- */
-int move_file_range(struct defrag_ctx *c, ext2_ino_t inode_nr, blk64_t from,
-                    e2_blkcnt_t numblocks, blk64_t dest)
-{
-	struct inode *inode = c->inodes[inode_nr];
-	struct free_extent *free_extent;
-	int extent_nr, ret;
-	blk64_t start;
+	to_extent = target->extents;
+	from_extent = from->extents;
+	cur_dest = to_extent->start_block;
+	cur_from = from_extent->start_block;
 
-	assert(!from);
-	start = get_physical_block(inode, from, &extent_nr);
-	if (inode->extents[extent_nr].start_block != start) {
-		ret = split_extent(c, inode, &inode->extents[extent_nr], start);
-		inode = c->inodes[inode_nr];
-		extent_nr++;
-	}
-	free_extent = containing_free_extent(c, dest);
-	while (numblocks && extent_nr < inode->extent_count) {
-		struct data_extent *extent = &inode->extents[extent_nr];
-		blk64_t end_block;
-		if (!free_extent) {
-			printf("A malfunction has occured: tried to write past "
-			       "end of disk\n");
-			errno = ENOENT;
-			return -1;
+	while (blocks_copied < from->block_count) {
+		e2_blkcnt_t num_blocks;
+		int ret;
+		if (cur_dest > to_extent->end_block) {
+			to_extent++;
+			cur_dest = to_extent->start_block;
 		}
-		if (numblocks < extent->end_block - extent->start_block + 1) {
-			blk64_t new_end_block = extent->start_block + numblocks;
-			ret = split_extent(c, inode, extent, new_end_block);
-			if (ret < 0)
-				return ret;
-			inode = c->inodes[inode_nr]; /* might have changed */
-			extent = &inode->extents[extent_nr];
-		}
-		end_block = dest + (extent->end_block - extent->start_block);
-		numblocks -= extent->end_block - extent->start_block + 1;
-		if (end_block > free_extent->end_block) {
-			blk64_t new_end_block = extent->start_block
-			                      + (free_extent->end_block - dest);
-			ret = split_extent(c, inode, extent, new_end_block);
-			if (ret < 0)
-				return ret;
-			inode = c->inodes[inode_nr]; /* might have changed */
-			extent = &inode->extents[extent_nr];
-		}
-		ret = allocate_space(c, extent->start_logical, dest);
-		if (ret)
-			return -1;
-		ret = move_file_extent(c, inode, extent->start_logical, dest);
-		if (ret < 0) {
-			deallocate_space(c, extent->start_logical, dest);
-			return ret;
-		}
-		extent_nr -= ret;
-		inode = c->inodes[inode_nr]; /* might have changed */
-		extent = &inode->extents[extent_nr];
-		dest = extent->end_block + 1;
-		++extent_nr;
-		if (extent_nr < inode->extent_count) {
-			free_extent = free_extent_after(c, dest);
-			if (free_extent) {
-				dest = free_extent->start_block;
+		if (cur_from > from_extent->end_block) {
+			from_extent++;
+			cur_from = from_extent->start_block;
+			if (from_extent->sparse) {
+				errno = ENOSYS;
+				return -1;
 			}
 		}
-	}
-	return 0;
-}
+		num_blocks = from_extent->end_block - cur_from + 1;
+		if (to_extent->end_block - cur_dest + 1 < num_blocks)
+			num_blocks = to_extent->end_block - cur_dest + 1;
 
-int move_file_data(struct defrag_ctx *c, ext2_ino_t inode_nr, blk64_t dest)
-{
-	struct inode *inode = c->inodes[inode_nr];
-	return move_file_range(c, inode_nr, 0, inode->block_count, dest);
-}
-
-int move_inode_data(struct defrag_ctx *c, struct inode *inode,
-                    struct allocation *target)
-{
-	struct data_extent *dest_extent;
-	int extent_nr = 0, ret;
-	blk64_t dest;
-	ext2_ino_t inode_nr = inode->extents[0].inode_nr;
-
-	dest_extent = target->extents;
-	dest = dest_extent->start_block;
-	while (extent_nr < inode->extent_count) {
-		struct data_extent *extent = &inode->extents[extent_nr];
-		blk64_t end_block;
-		e2_blkcnt_t numblocks = dest_extent->end_block - dest + 1;
-		if (numblocks < extent->end_block - extent->start_block + 1) {
-			blk64_t new_end_block = extent->start_block + numblocks;
-			new_end_block -= 1;
-			ret = split_extent(c, inode, extent, new_end_block);
-			if (ret < 0)
-				return ret;
-			inode = c->inodes[inode_nr]; /* might have changed */
-			extent = &inode->extents[extent_nr];
-		}
-		end_block = dest + (extent->end_block - extent->start_block);
-		ret = move_file_extent(c, inode, extent->start_logical, dest);
-		if (ret < 0)
+		ret = __move_block_range(c, cur_from, cur_dest, num_blocks);
+		if (ret)
 			return ret;
-		extent_nr -= ret;
-		inode = c->inodes[inode_nr]; /* might have changed */
-		extent = &inode->extents[extent_nr];
-		dest = extent->end_block + 1;
-		++extent_nr;
-		if (dest > dest_extent->end_block &&
-		    extent_nr < inode->extent_count) {
-			dest_extent++;
-			dest = dest_extent->start_block;
-		}
+
+		blocks_copied += num_blocks;
+		cur_dest += num_blocks;
+		cur_from += num_blocks;
 	}
 	return 0;
 }

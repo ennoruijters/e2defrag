@@ -234,27 +234,33 @@ static struct inode *make_inode_extents(struct defrag_ctx *c,
 		i += 1;
 		tmp = tmp->next;
 	}
-	ret = malloc(sizeof(struct inode) + sizeof(struct data_extent) * i);
+	ret = malloc(sizeof(struct inode));
 	if (!ret)
 		return NULL;
-	ret->block_count = 0;
-	ret->extent_count = i;
+	ret->data = malloc(sizeof(struct allocation) +
+	                   sizeof(struct data_extent) * i);
+	if (!ret->data) {
+		free(ret);
+		return NULL;
+	}
+	ret->data->block_count = 0;
+	ret->data->extent_count = i;
 	ret->metadata = NULL;
 	for (i = 0, tmp = extent; tmp != NULL; i++, tmp = tmp->next) {
-		ret->extents[i].start_block = tmp->e.start_block;
-		ret->extents[i].end_block = tmp->e.end_block;
-		ret->extents[i].inode_nr = inode_nr;
-		ret->block_count += tmp->e.end_block - tmp->e.start_block + 1;
-		ret->extents[i].start_logical = tmp->e.start_logical;
+		ret->data->extents[i].start_block = tmp->e.start_block;
+		ret->data->extents[i].end_block = tmp->e.end_block;
+		ret->data->extents[i].inode_nr = inode_nr;
+		ret->data->block_count += tmp->e.end_block - tmp->e.start_block + 1;
+		ret->data->extents[i].start_logical = tmp->e.start_logical;
 		if (tmp->next != NULL) {
 			blk64_t next_logical;
 			next_logical = tmp->next->e.start_logical;
-			ret->extents[i].sparse = get_sparse_array(tmp,
+			ret->data->extents[i].sparse = get_sparse_array(tmp,
 			                                          next_logical);
 		} else {
-			ret->extents[i].sparse = NULL;
+			ret->data->extents[i].sparse = NULL;
 		}
-		insert_data_extent(c, ret->extents + i);
+		insert_data_extent(c, ret->data->extents + i);
 	}
 	return ret;
 }
@@ -502,13 +508,18 @@ long parse_inode(struct defrag_ctx *c, ext2_ino_t inode_nr,
 {
 	if (inode->i_blocks == 0) {
 		c->inodes[inode_nr] = malloc(sizeof(struct inode));
-		if (c->inodes[inode_nr] != NULL) {
-			c->inodes[inode_nr]->block_count = 0;
-			c->inodes[inode_nr]->extent_count = 0;
-			c->inodes[inode_nr]->on_disk =
-			                  (union on_disk_block *)inode->i_block;
-			c->inodes[inode_nr]->metadata = NULL;
+		if (!c->inodes[inode_nr])
+			return -1;
+		c->inodes[inode_nr]->data = malloc(sizeof(struct allocation));
+		if (!c->inodes[inode_nr]->data) {
+			free(c->inodes[inode_nr]);
+			return -1;
 		}
+		c->inodes[inode_nr]->data->block_count = 0;
+		c->inodes[inode_nr]->data->extent_count = 0;
+		c->inodes[inode_nr]->on_disk =
+			                  (union on_disk_block *)inode->i_block;
+		c->inodes[inode_nr]->metadata = NULL;
 		return 0;
 	}
 	if (inode_nr < EXT2_FIRST_INO(&c->sb)) {

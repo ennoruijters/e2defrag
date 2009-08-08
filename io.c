@@ -230,8 +230,8 @@ void close_drive(struct defrag_ctx *c)
 		int j;
 		if (!c->inodes[i])
 			continue;
-		for (j = 0; j < c->inodes[i]->extent_count; j++) {
-			struct data_extent *e = &c->inodes[i]->extents[j];
+		for (j = 0; j < c->inodes[i]->data->extent_count; j++) {
+			struct data_extent *e = &c->inodes[i]->data->extents[j];
 			struct sparse_extent *s = e->sparse;
 			free (s);
 		}

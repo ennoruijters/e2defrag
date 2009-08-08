@@ -74,8 +74,7 @@ struct allocation {
 };
 
 struct inode {
-	e2_blkcnt_t block_count; /* Excludes any extent tree blocks */
-	e2_blkcnt_t extent_count; /* Excludes any extent tree extents */
+	struct allocation *data;
 	struct allocation *metadata; /* If NULL: inode uses direct addressing */
 	union on_disk_block {
 		__u32 i_block[EXT2_N_BLOCKS];
@@ -87,7 +86,6 @@ struct inode {
 			} extent[4];
 		} extents;
 	} *on_disk;
-	struct data_extent extents[];
 };
 
 struct defrag_ctx {
@@ -126,20 +124,19 @@ void mark_blocks_used(struct defrag_ctx *c, blk64_t first_block,
 int move_file_range(struct defrag_ctx *c, ext2_ino_t inode, blk64_t from,
                     e2_blkcnt_t numblocks, blk64_t dest);
 int move_data_extent(struct defrag_ctx *c, struct data_extent *extent_to_copy,
-                     blk64_t new_start);
-int move_file_data(struct defrag_ctx *c, ext2_ino_t inode, blk64_t dest);
-int move_inode_data(struct defrag_ctx *c, struct inode *inode,
-                    struct allocation *target);
+                     struct allocation *target);
+int copy_data(struct defrag_ctx *c, struct allocation *from,
+              struct allocation *target);
 
 /* debug.c */
 void dump_trees(struct defrag_ctx *c, int to_dump);
 
 /* freespace.c */
-int allocate_space(struct defrag_ctx *c, blk64_t start, e2_blkcnt_t numblocks);
 int deallocate_space(struct defrag_ctx *c, blk64_t start, e2_blkcnt_t num);
 int deallocate_blocks(struct defrag_ctx *c, struct allocation *space);
-struct allocation *allocate_blocks(struct defrag_ctx *c, e2_blkcnt_t num_blocks,
-                                   ext2_ino_t inode_nr, blk64_t first_logical);
+int allocate(struct defrag_ctx *c, struct allocation *space);
+struct allocation *get_blocks(struct defrag_ctx *c, e2_blkcnt_t num_blocks,
+                              ext2_ino_t inode_nr, blk64_t first_logical);
 
 /* inode.c */
 int try_extent_merge(struct defrag_ctx *, struct inode *, struct data_extent *);
@@ -151,7 +148,6 @@ int is_metadata(struct defrag_ctx *c, struct data_extent *extent);
 
 /* interactive.c */
 int move_extent_interactive(struct defrag_ctx *c);
-int move_file_interactive(struct defrag_ctx *c);
 int defrag_file_interactive(struct defrag_ctx *c);
 
 /* io.c */
@@ -164,7 +160,8 @@ void close_drive(struct defrag_ctx *c);
 /* metadata_write.c */
 int write_extent_metadata(struct defrag_ctx *c, struct data_extent *e);
 int move_metadata_extent(struct defrag_ctx *c, struct data_extent *extent,
-                         blk64_t target);
+                         struct allocation *target);
+int write_inode_metadata(struct defrag_ctx *c, struct inode *inode);
 
 /* metadata_read.c */
 long parse_inode(struct defrag_ctx *c, ext2_ino_t inode_nr,

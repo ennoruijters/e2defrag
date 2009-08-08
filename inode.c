@@ -12,8 +12,8 @@
 static void inode_remove_from_trees(struct defrag_ctx *c, struct inode *inode)
 {
 	int i;
-	for (i = 0; i < inode->extent_count; i++)
-		rb_remove_data_extent(c, &inode->extents[i]);
+	for (i = 0; i < inode->data->extent_count; i++)
+		rb_remove_data_extent(c, &inode->data->extents[i]);
 }
 
 int is_metadata(struct defrag_ctx *c, struct data_extent *extent)
@@ -104,9 +104,9 @@ static struct sparse_extent *merge_sparse(struct sparse_extent *s1,
 
 blk64_t get_logical_block(struct inode *inode, blk64_t phys_block)
 {
-	struct data_extent *d = inode->extents;
+	struct data_extent *d = inode->data->extents;
 	blk64_t ret;
-	while ((d - inode->extents) < inode->extent_count
+	while ((d - inode->data->extents) < inode->data->extent_count
 	       && (d->end_block < phys_block
 	           || d->start_block > phys_block)) {
 		d++;
@@ -134,14 +134,14 @@ blk64_t get_physical_block(struct inode *inode, blk64_t logical_block,
 	struct data_extent *extent;
 	int current = 0;
 	blk64_t ret;
-	while (current < inode->extent_count - 1) {
-		extent = &inode->extents[current + 1];
+	while (current < inode->data->extent_count - 1) {
+		extent = &inode->data->extents[current + 1];
 		if (extent->start_logical <= logical_block)
 			current++;
 		else
 			break;
 	}
-	extent = &inode->extents[current];
+	extent = &inode->data->extents[current];
 	ret = extent->start_block + logical_block - extent->start_logical;
 	if (extent_nr)
 		*extent_nr = current;
@@ -235,30 +235,30 @@ int split_extent(struct defrag_ctx *c,
 	int extent_nr, ret;
 	e2_logical_start = get_logical_block(inode, new_end_block + 1);
 	inode_remove_from_trees(c, inode);
-	extent_nr = extent - inode->extents;
-	inode->extent_count += 1;
+	extent_nr = extent - inode->data->extents;
+	inode->data->extent_count += 1;
 	nbytes = sizeof(struct inode);
-	nbytes += inode->extent_count * sizeof(struct data_extent);
+	nbytes += inode->data->extent_count * sizeof(struct data_extent);
 	inode = realloc(inode, nbytes);
 	if (!inode)
 		return -1;
 	c->inodes[inode_nr] = inode;
-	memmove(&inode->extents[extent_nr + 1], &inode->extents[extent_nr],
-	        (inode->extent_count - extent_nr - 1) * sizeof(struct data_extent));
-	inode->extents[extent_nr + 1].start_block = new_end_block + 1;
-	inode->extents[extent_nr + 1].start_logical = e2_logical_start;
-	inode->extents[extent_nr].end_block = new_end_block;
-	sparse = inode->extents[extent_nr].sparse;
-	ret = split_sparse(inode->extents + extent_nr,
-	                   inode->extents + extent_nr + 1,
+	memmove(&inode->data->extents[extent_nr + 1], &inode->data->extents[extent_nr],
+	        (inode->data->extent_count - extent_nr - 1) * sizeof(struct data_extent));
+	inode->data->extents[extent_nr + 1].start_block = new_end_block + 1;
+	inode->data->extents[extent_nr + 1].start_logical = e2_logical_start;
+	inode->data->extents[extent_nr].end_block = new_end_block;
+	sparse = inode->data->extents[extent_nr].sparse;
+	ret = split_sparse(inode->data->extents + extent_nr,
+	                   inode->data->extents + extent_nr + 1,
 	                   sparse);
 	if (ret < 0) {
-		inode->extents[extent_nr].end_block
-		                      = inode->extents[extent_nr + 1].end_block;
-		inode->extent_count--;
-		memmove(&inode->extents[extent_nr + 1],
-		        &inode->extents[extent_nr + 2],
-		        inode->extent_count - extent_nr - 1);
+		inode->data->extents[extent_nr].end_block
+		                      = inode->data->extents[extent_nr + 1].end_block;
+		inode->data->extent_count--;
+		memmove(&inode->data->extents[extent_nr + 1],
+		        &inode->data->extents[extent_nr + 2],
+		        inode->data->extent_count - extent_nr - 1);
 		inode = realloc(inode, nbytes - sizeof(struct data_extent));
 		if (inode)
 			c->inodes[inode_nr] = inode;
@@ -266,8 +266,8 @@ int split_extent(struct defrag_ctx *c,
 		ret = 0;
 		free(sparse);
 	}
-	for (extent_nr = 0; extent_nr < inode->extent_count; extent_nr++) {
-		insert_data_extent(c, &inode->extents[extent_nr]);
+	for (extent_nr = 0; extent_nr < inode->data->extent_count; extent_nr++) {
+		insert_data_extent(c, &inode->data->extents[extent_nr]);
 	}
 	return ret;
 }
@@ -297,10 +297,10 @@ static int merge_extents(struct inode *inode,
 	extent1->sparse = sparse;
 	extent1->end_block = extent2->end_block;
 
-	pos = extent2 - inode->extents;
-	num = inode->extent_count - pos - 1;
+	pos = extent2 - inode->data->extents;
+	num = inode->data->extent_count - pos - 1;
 	memmove(extent2, extent2 + 1, num * sizeof(struct data_extent));
-	inode->extent_count--;
+	inode->data->extent_count--;
 	return 0;
 }
 
@@ -312,9 +312,9 @@ int try_extent_merge(struct defrag_ctx *c,
 	char removed_from_tree = 0;
 
 	while (oldcount != count) {
-		int pos = extent - inode->extents;
-		struct data_extent *prev = inode->extents + pos - 1;
-		struct data_extent *next = inode->extents + pos + 1;
+		int pos = extent - inode->data->extents;
+		struct data_extent *prev = inode->data->extents + pos - 1;
+		struct data_extent *next = inode->data->extents + pos + 1;
 		oldcount = count;
 		if (pos > 0 && prev->end_block == extent->start_block - 1) {
 			if (!removed_from_tree) {
@@ -332,7 +332,7 @@ int try_extent_merge(struct defrag_ctx *c,
 			pos -= 1;
 		}
 
-		if ((pos + 1) < inode->extent_count
+		if ((pos + 1) < inode->data->extent_count
 		    && extent->end_block == next->start_block - 1) {
 			if (!removed_from_tree) {
 				inode_remove_from_trees(c, inode);
@@ -349,7 +349,7 @@ int try_extent_merge(struct defrag_ctx *c,
 		struct inode *new_inode;
 		ext2_ino_t inode_nr = extent->inode_nr;
 		size_t num_bytes = sizeof(*inode);
-		num_bytes += inode->extent_count * sizeof(*inode->extents);
+		num_bytes += inode->data->extent_count * sizeof(*inode->data->extents);
 
 		new_inode = realloc(inode, num_bytes);
 		/* merge_extents has already consilidated everything to the
@@ -362,8 +362,8 @@ int try_extent_merge(struct defrag_ctx *c,
 
 	if (removed_from_tree) {
 		int i;
-		for (i = 0; i < inode->extent_count; i++)
-			insert_data_extent(c, &inode->extents[i]);
+		for (i = 0; i < inode->data->extent_count; i++)
+			insert_data_extent(c, &inode->data->extents[i]);
 	}
 	return downcount;
 }
