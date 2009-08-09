@@ -7,6 +7,7 @@
 
 struct settings global_settings = {
 	.simulate = 0,
+	.interactive = 0,
 };
 
 void usage(int retval)
@@ -19,6 +20,8 @@ int parse_long_option(int argc, char **argv, int *idx)
 {
 	if (strcmp(argv[*idx], "--simulate") == 0)
 		global_settings.simulate = 1;
+	else if (strcmp(argv[*idx], "--interactive") == 0)
+		global_settings.interactive = 1;
 	else
 		return EXIT_FAILURE;
 	return 0;
@@ -36,6 +39,9 @@ int parse_options(int argc, char *argv[], char **filename)
 			switch (argv[i][1]) {
 			case 's':
 				global_settings.simulate = 1;
+				break;
+			case 'i':
+				global_settings.interactive = 1;
 				break;
 			case '-':
 				if (argv[i][2] != '0') {
@@ -93,9 +99,13 @@ int main(int argc, char *argv[])
 #ifndef NDEBUG
 	dump_trees(disk, 3);
 #endif
-	ret = 0;
-	while (!ret)
-		ret = defrag_file_interactive(disk);
+	if (global_settings.interactive) {
+		ret = 0;
+		while (!ret)
+			ret = defrag_file_interactive(disk);
+	} else {
+		ret = do_whole_disk(disk);
+	}
 	close_drive(disk);
 	return 0;
 }

@@ -5,8 +5,6 @@
 #include "e2defrag.h"
 #include "extree.h"
 
-extern int do_one_inode(struct defrag_ctx *c, ext2_ino_t, int);
-
 static int getnumber(long *ret, long min, long max)
 {
 	char *endptr;
@@ -115,7 +113,7 @@ int defrag_file_interactive(struct defrag_ctx *c)
 		case 0:
 			return 1;
 		case -1:
-			ret = consolidate_free_space(c, 0);
+			ret = consolidate_free_space(c);
 			if (ret)
 				printf("Error: %s\n", strerror(errno));
 			if (ret && errno != ENOSPC)
@@ -124,7 +122,7 @@ int defrag_file_interactive(struct defrag_ctx *c)
 		case -2:
 			ret = 0;
 			while (!ret)
-				ret = consolidate_free_space(c, 0);
+				ret = consolidate_free_space(c);
 			if (errno == ENOSPC)
 				return 0;
 			return ret;
@@ -140,7 +138,7 @@ int defrag_file_interactive(struct defrag_ctx *c)
 		printf("Inode has no data associated\n");
 		return 0;
 	}
-	ret = do_one_inode(c, inode_nr, 0);
+	ret = do_one_inode(c, inode_nr);
 	if (ret < 0)
 		printf("Error: %s\n", strerror(errno));
 	printf("Inode now has %llu fragments\n",

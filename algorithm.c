@@ -57,7 +57,7 @@ static struct free_extent *find_free_extent(struct defrag_ctx *c,
 }
 
 static int try_pack_extent(struct defrag_ctx *c, struct data_extent *data,
-                           struct free_extent *away_from, int silent)
+                           struct free_extent *away_from)
 {
 	struct free_extent *target;
 	struct allocation *new_alloc;
@@ -91,7 +91,7 @@ static int try_pack_extent(struct defrag_ctx *c, struct data_extent *data,
 		}
 	}
 	new_start = target->start_block;
-	if (!silent) {
+	if (global_settings.interactive) {
 		printf("Moving extent starting at %llu (inode %u, %llu blocks)"
 		       " to %llu\n",
 		       data->start_block, data->inode_nr, 
@@ -121,14 +121,16 @@ static int try_pack_extent(struct defrag_ctx *c, struct data_extent *data,
 	return ret;
 }
 
-int consolidate_free_space(struct defrag_ctx *c, int silent)
+int consolidate_free_space(struct defrag_ctx *c)
 {
 	struct rb_node *n;
 	struct free_extent *free_extent;
 	n = rb_last(&c->free_tree_by_size);
 	if (!n) {
-		if (!silent)
+		if (global_settings.interactive) {
+			/* TODO: Shouldn't this be a generic error message? */
 			printf("No free space on disk\n");
+		}
 		errno = ENOSPC;
 		return 1;
 	}
@@ -139,8 +141,7 @@ int consolidate_free_space(struct defrag_ctx *c, int silent)
 		        containing_data_extent(c, free_extent->start_block - 1);
 		if (extent_before) {
 			int ret;
-			ret = try_pack_extent(c, extent_before, free_extent,
-			                      silent);
+			ret = try_pack_extent(c, extent_before, free_extent);
 			if (ret >= 0 || (ret < 0 && errno != ENOSPC))
 				return ret;
 		}
@@ -148,8 +149,7 @@ int consolidate_free_space(struct defrag_ctx *c, int silent)
 		        containing_data_extent(c, free_extent->start_block - 1);
 		if (extent_after) {
 			int ret;
-			ret = try_pack_extent(c, extent_after, free_extent,
-			                      silent);
+			ret = try_pack_extent(c, extent_after, free_extent);
 			if (ret >= 0 || (ret < 0 && errno != ENOSPC))
 				return ret;
 		}
@@ -163,7 +163,7 @@ int consolidate_free_space(struct defrag_ctx *c, int silent)
 	 * If we got out of the loop, then we have not found anything good
 	 * to move.
 	 */
-	if (!silent)
+	if (global_settings.interactive)
 		printf("Could not find any way to consolidate free space\n");
 	errno = ENOSPC;
 	return 1;
@@ -174,7 +174,7 @@ int consolidate_free_space(struct defrag_ctx *c, int silent)
  * than the current one.
  * Returns 0 for success, 1 for no opportunity, -1 for error.
  */
-int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr, int silent)
+int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr)
 {
 	struct inode *inode;
 	struct allocation *target;
@@ -190,7 +190,7 @@ int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr, int silent)
 			return 1;
 	}
 	if (target->extent_count >= inode->data->extent_count) {
-		if (!silent)
+		if (global_settings.interactive)
 			printf("No better placement possible: best new placement has %llu fragments\n", target->extent_count);
 		free(target);
 		if (ret < 0)
@@ -198,7 +198,7 @@ int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr, int silent)
 		else
 			return 1;
 	}
-	while (!answer) {
+	while (!answer && global_settings.interactive) {
 		printf("Possible allocation has %llu fragments. Continue? ",
 		       target->extent_count);
 		answer = getchar();
@@ -208,7 +208,7 @@ int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr, int silent)
 		while (ret != '\n')
 			ret = getchar();
 	}
-	if (answer == 'y' || answer == 'Y') {
+	if (!global_settings.interactive || answer == 'y' || answer == 'Y') {
 		ret = allocate(c, target);
 		if (ret < 0) {
 			free(target);
@@ -227,4 +227,55 @@ int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr, int silent)
 		}
 	}
 	return ret;
+}
+
+/* Very stupid algorithm: Start by defragmenting every file starting at inode
+   0 until no more inodes can be defragmented, then consolidate the free space
+   as much as possible and start over. When nothing more can be done, it
+   terminates. */
+int do_whole_disk(struct defrag_ctx *c)
+{
+	ext2_ino_t i;
+	int ret;
+	char changed, optimal;
+	do {
+		changed = 0;
+		optimal = 1;
+		for (i = 0; i < ext2_inodes_on_disk(&c->sb); i++) {
+			struct inode *inode = c->inodes[i];
+			if (!inode)
+				continue;
+			if (inode->data->extent_count > 1) {
+				ret = do_one_inode(c, i);
+				if (ret < 0)
+					return ret;
+				else if (ret == 0)
+					changed = 1;
+				/* ret == 1 means could not improve */
+				if (inode->data->extent_count > 1)
+					optimal = 0;
+			}
+			if (inode->metadata &&
+			    inode->metadata->extent_count > 1)
+			{
+				ret = write_inode_metadata(c, inode);
+				if (ret < 0)
+					return ret;
+				changed = 1;
+				/* TODO: Too coupled with the algorithm.
+				   Will break on improved algorithm later.
+				   */
+				if (inode->metadata->extent_count > 1)
+					optimal = 0;
+			}
+		}
+		if (!optimal) {
+			ret = consolidate_free_space(c);
+			if (ret < 0)
+				return ret;
+			else if (ret == 0)
+				changed = 1;
+		}
+	} while (changed && !optimal);
+	return 0;
 }

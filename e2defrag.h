@@ -12,6 +12,7 @@ typedef __u32 ext2_ino_t;
 
 struct settings {
 	unsigned int simulate : 1;
+	unsigned int interactive : 1;
 };
 
 extern struct settings global_settings;
@@ -112,7 +113,9 @@ struct defrag_ctx {
 /* FUNCTION DECLARATIONS */
 
 /* algorithm.c */
-int consolidate_free_space(struct defrag_ctx *c, int silent);
+int consolidate_free_space(struct defrag_ctx *c);
+int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr);
+int do_whole_disk(struct defrag_ctx *c);
 
 /* bitmap.c */
 void mark_blocks_unused(struct defrag_ctx *c, blk64_t first_block,
