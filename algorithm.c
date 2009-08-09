@@ -208,12 +208,12 @@ int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr, int silent)
 		while (ret != '\n')
 			ret = getchar();
 	}
-	ret = allocate(c, target);
-	if (ret < 0) {
-		free(target);
-		return ret;
-	}
 	if (answer == 'y' || answer == 'Y') {
+		ret = allocate(c, target);
+		if (ret < 0) {
+			free(target);
+			return ret;
+		}
 		ret = copy_data(c, inode->data, target);
 		if (!ret) {
 			ret = deallocate_blocks(c, inode->data);
