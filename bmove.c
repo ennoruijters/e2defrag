@@ -1,6 +1,7 @@
 /* File for performing block moves */
 
 #define _GNU_SOURCE
+#define _FILE_OFFSET_BITS 64
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -9,16 +10,67 @@
 #include "e2defrag.h"
 #include "extree.h"
 
-static int transfer_pipe[2] = {-1, -1};
+static const size_t copy_buffer_size = 65536;
+
+static int __move_block_range_nosplice(struct defrag_ctx *c, blk64_t from,
+                                       blk64_t to, size_t nr_blocks)
+{
+	static unsigned char *copy_buffer;
+	int ret;
+	off_t from_offset, to_offset, tmp;
+	ssize_t size;
+
+	if (global_settings.simulate)
+		return 0;
+	if (!copy_buffer) {
+		copy_buffer = malloc(copy_buffer_size);
+		if (!copy_buffer)
+			return -1;
+	}
+	from_offset = from * EXT2_BLOCK_SIZE(&c->sb);
+	to_offset = to * EXT2_BLOCK_SIZE(&c->sb);
+	size = EXT2_BLOCK_SIZE(&c->sb) * nr_blocks;
+	while (size > 0) {
+		ssize_t to_write;
+		tmp = lseek(c->fd, from_offset, SEEK_SET);
+		if (tmp == (off_t) -1)
+			return -1;
+		to_write = size > copy_buffer_size ? copy_buffer_size : size;
+		ret = read(c->fd, copy_buffer, to_write);
+		if (ret <= 0)
+			return ret;
+
+		size -= ret;
+		to_write = ret;
+		from_offset += ret;
+		while (to_write > 0) {
+			tmp = lseek(c->fd, to_offset, SEEK_SET);
+			ret = write(c->fd, copy_buffer, to_write);
+			if (ret <= 0)
+				return ret;
+			to_write -= ret;
+			to_offset += ret;
+		}
+	}
+	return 0;
+}
 
 static int __move_block_range(struct defrag_ctx *c, blk64_t from, blk64_t to,
                               size_t nr_blocks)
 {
+#ifdef NOSPLICE
+	return __move_block_range_nosplice(c, from, to, nr_blocks);
+#else
+	static int transfer_pipe[2] = {-1, -1};
+	static char has_splice = 1; /* For older kernels */
 	int ret, size;
 	loff_t from_offset, to_offset;
 
 	if (global_settings.simulate)
 		return 0;
+	if (!has_splice)
+		return __move_block_range_nosplice(c, from, to, nr_blocks);
+
 	if (transfer_pipe[0] < 0) {
 		ret = pipe(transfer_pipe);
 		if (ret)
@@ -31,10 +83,18 @@ static int __move_block_range(struct defrag_ctx *c, blk64_t from, blk64_t to,
 		int to_write;
 		ret = splice(c->fd, &from_offset, transfer_pipe[1], NULL,
 		             size, SPLICE_F_MOVE);
-		if (ret < 0)
+		if (ret < 0) {
+			if (errno == ENOSYS) {
+				has_splice = 0;
+				close(transfer_pipe[0]);
+				close(transfer_pipe[1]);
+				return __move_block_range_nosplice(c, from, to,
+				                                   nr_blocks);
+			}
 			return ret;
-		else
+		} else {
 			size -= ret;
+		}
 		to_write = ret;
 		while (to_write > 0) {
 			ret = splice(transfer_pipe[0], NULL, c->fd, &to_offset,
@@ -46,6 +106,7 @@ static int __move_block_range(struct defrag_ctx *c, blk64_t from, blk64_t to,
 		}
 	}
 	return 0;
+#endif /* NOSPLICE */
 }
 
 /* Target must have exactly one extent (for now) and exactly as many blocks
