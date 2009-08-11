@@ -12,8 +12,13 @@
 
 static const size_t copy_buffer_size = 65536;
 
+#ifndef NOSPLICE
 static int __move_block_range_nosplice(struct defrag_ctx *c, blk64_t from,
                                        blk64_t to, size_t nr_blocks)
+#else
+static int __move_block_range(struct defrag_ctx *c, blk64_t from, blk64_t to,
+                              size_t nr_blocks)
+#endif
 {
 	static unsigned char *copy_buffer;
 	int ret;
@@ -55,12 +60,10 @@ static int __move_block_range_nosplice(struct defrag_ctx *c, blk64_t from,
 	return 0;
 }
 
+#ifndef NOSPLICE
 static int __move_block_range(struct defrag_ctx *c, blk64_t from, blk64_t to,
                               size_t nr_blocks)
 {
-#ifdef NOSPLICE
-	return __move_block_range_nosplice(c, from, to, nr_blocks);
-#else
 	static int transfer_pipe[2] = {-1, -1};
 	static char has_splice = 1; /* For older kernels */
 	int ret, size;
@@ -106,8 +109,8 @@ static int __move_block_range(struct defrag_ctx *c, blk64_t from, blk64_t to,
 		}
 	}
 	return 0;
-#endif /* NOSPLICE */
 }
+#endif /* NOSPLICE */
 
 /* Target must have exactly one extent (for now) and exactly as many blocks
    as the source extent. Target is no longer valid afterwards and must be
