@@ -227,16 +227,14 @@ void close_drive(struct defrag_ctx *c)
 	}
 	free(c->bg_maps);
 	for (i = 0; i < c->sb.s_inodes_count; i++) {
-		int j;
 		if (!c->inodes[i])
 			continue;
-		for (j = 0; j < c->inodes[i]->data->extent_count; j++) {
-			struct data_extent *e = &c->inodes[i]->data->extents[j];
-			struct sparse_extent *s = e->sparse;
-			free (s);
-		}
 		if (c->inodes[i]->metadata)
 			free(c->inodes[i]->metadata);
+		if (c->inodes[i]->data)
+			free(c->inodes[i]->data);
+		if (c->inodes[i]->num_sparse)
+			free(c->inodes[i]->sparse);
 		free(c->inodes[i]);
 	}
 	c->gd_map = PAGE_START(c->gd_map);

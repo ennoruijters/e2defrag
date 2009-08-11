@@ -25,19 +25,15 @@ struct tmp_sparse {
 
 struct tmp_extent {
 	struct data_extent e;
-	struct tmp_sparse *s;
-	struct tmp_sparse *last_sparse;
+	struct tmp_sparse **last_sparse;
 	struct tmp_extent *next;
 };
 
-static void add_sparse(struct tmp_extent *extent, blk64_t first_block,
+static void add_sparse(struct tmp_sparse **last_sparse, blk64_t first_block,
                        e2_blkcnt_t nblk, struct obstack *mempool)
 {
-	struct tmp_sparse *s = extent->last_sparse;
-	if (!s) {
-		s = obstack_alloc(mempool, sizeof(struct tmp_sparse));
-		extent->s = extent->last_sparse = s;
-		s->next = NULL;
+	struct tmp_sparse *s = *last_sparse;
+	if (s->s.start == 0) {
 		s->s.num_blocks = nblk;
 		s->s.start = first_block;
 	} else if (first_block == s->s.start + s->s.num_blocks) {
@@ -47,7 +43,7 @@ static void add_sparse(struct tmp_extent *extent, blk64_t first_block,
 		s->next->next = NULL;
 		s->next->s.num_blocks = nblk;
 		s->next->s.start = first_block;
-		extent->last_sparse = s->next;
+		*last_sparse = s->next;
 	}
 }
 
@@ -66,7 +62,6 @@ static int do_blocks(struct tmp_extent *first_extent,
 		le->e.end_block = block + nblk - 1;
 		le->e.start_logical = logical_block;
 		le->next = NULL;
-		le->s = le->last_sparse = NULL;
 		return 1;
 	} else if (block != 0) {
 		if (block != le->e.end_block + 1) {
@@ -77,13 +72,11 @@ static int do_blocks(struct tmp_extent *first_extent,
 			le->next = NULL;
 			le->e.start_block = block;
 			le->e.start_logical = logical_block;
-			le->s = NULL;
-			le->last_sparse = NULL;
 		}
 		le->e.end_block = block + nblk - 1;
 		return 1;
 	} else { /* blocks[i] == 0 */
-		add_sparse(le, logical_block, 1, mempool);
+		add_sparse(first_extent->last_sparse, logical_block, 1,mempool);
 		return 0;
 	}
 }
@@ -110,7 +103,8 @@ static int do_ind_block(struct defrag_ctx *c, struct tmp_extent *first_extent,
 		return count;
 	} else {
 		int numblocks = EXT2_ADDR_PER_BLOCK(&c->sb);
-		add_sparse(*last_extent, logical_block, numblocks, mempool);
+		add_sparse(first_extent->last_sparse, logical_block, numblocks,
+		           mempool);
 		return numblocks;
 	}
 }
@@ -147,7 +141,8 @@ static long do_dind_block(struct defrag_ctx *c, struct tmp_extent *first_extent,
 		e2_blkcnt_t numblocks = EXT2_ADDR_PER_BLOCK(&c->sb);
 		numblocks = numblocks + (numblocks * numblocks);
 		/* n indirect blocks, plus n*n data blocks */
-		add_sparse(*last_extent, logical_block, numblocks, mempool);
+		add_sparse(first_extent->last_sparse, logical_block, numblocks,
+		           mempool);
 		return numblocks;
 	}
 	return logical_block - old_logical_block;
@@ -188,47 +183,45 @@ static long do_tind_block(struct defrag_ctx *c, struct tmp_extent *first_extent,
 			    + (numblocks * numblocks * numblocks);
 		/* n doubly indirect blocks, plus n*n indirect blocks,
 		 * plus n^3 data blocks */
-		add_sparse(*last_extent, logical_block, numblocks, mempool);
+		add_sparse(first_extent->last_sparse, logical_block, numblocks,
+		           mempool);
 		return numblocks;
 	}
 	return logical_block - old_logical_block;
 }
 
-static struct sparse_extent *get_sparse_array(struct tmp_extent *extent,
-                                              blk64_t next_logical)
+static int set_inode_sparse(struct inode *inode, struct tmp_sparse *first)
 {
 	e2_blkcnt_t nr_sparse = 0, i;
-	struct tmp_sparse *current = extent->s;
-	struct sparse_extent *ret;
+	struct tmp_sparse *current = first;
 
-	while (current && current->next) {
+	if (current->s.num_blocks == 0)
+		current = NULL;
+	while (current) {
 		nr_sparse++;
 		current = current->next;
 	}
-	if (current) {
-		if (current->s.start + current->s.num_blocks != next_logical)
-			nr_sparse++;
-	}
+	inode->num_sparse = nr_sparse;
 	if (nr_sparse == 0)
-		return NULL;
-	ret = malloc(sizeof(struct sparse_extent) * (nr_sparse + 1));
-	if (!ret)
-		return NULL;
-	current = extent->s;
+		return 0;
+	inode->sparse = malloc(sizeof(struct sparse_extent) * nr_sparse);
+	if (!inode->sparse)
+		return -1;
+	current = first;
 	for (i = 0; i < nr_sparse; i++, current = current->next)
-		ret[i] = current->s;
-	ret[i].start = 0;
-	ret[i].num_blocks = 0;
-	return ret;
+		inode->sparse[i] = current->s;
+	return 0;
 }
 
 static struct inode *make_inode_extents(struct defrag_ctx *c,
-                                        struct tmp_extent *extent,
+                                        struct tmp_extent *first_extent,
+					struct tmp_sparse *first_sparse,
 					ext2_ino_t inode_nr)
 {
-	struct tmp_extent *tmp = extent;
+	struct tmp_extent *tmp = first_extent;
 	struct inode *ret;
 	e2_blkcnt_t i = 0;
+	int retval;
 
 	while (tmp != NULL) {
 		i += 1;
@@ -243,22 +236,27 @@ static struct inode *make_inode_extents(struct defrag_ctx *c,
 		free(ret);
 		return NULL;
 	}
+	if (first_sparse) {
+		retval = set_inode_sparse(ret, first_sparse);
+		if (retval) {
+			free(ret->data);
+			free(ret);
+			return NULL;
+		}
+	}
 	ret->data->block_count = 0;
 	ret->data->extent_count = i;
 	ret->metadata = NULL;
-	for (i = 0, tmp = extent; tmp != NULL; i++, tmp = tmp->next) {
+	for (i = 0, tmp = first_extent; tmp != NULL; i++, tmp = tmp->next) {
 		ret->data->extents[i].start_block = tmp->e.start_block;
 		ret->data->extents[i].end_block = tmp->e.end_block;
 		ret->data->extents[i].inode_nr = inode_nr;
-		ret->data->block_count += tmp->e.end_block - tmp->e.start_block + 1;
+		ret->data->block_count +=
+		                      tmp->e.end_block - tmp->e.start_block + 1;
 		ret->data->extents[i].start_logical = tmp->e.start_logical;
 		if (tmp->next != NULL) {
 			blk64_t next_logical;
 			next_logical = tmp->next->e.start_logical;
-			ret->data->extents[i].sparse = get_sparse_array(tmp,
-			                                          next_logical);
-		} else {
-			ret->data->extents[i].sparse = NULL;
 		}
 		insert_data_extent(c, ret->data->extents + i);
 	}
@@ -326,6 +324,59 @@ static int read_extent_index(struct defrag_ctx *c,
 	}
 	return 0;
 }
+static int gen_inode_sparse(struct inode *inode)
+{
+	const struct data_extent tmp_extent = {
+		.start_block = 0,
+		.end_block = 0,
+		.start_logical = -1
+	};
+	const struct data_extent *extent, *last_extent;
+	struct sparse_extent *sparse;
+	e2_blkcnt_t extent_nr = 0;
+	int num_sparse = 0;
+
+	last_extent = &tmp_extent;
+	extent = inode->data->extents;
+	while (extent_nr < inode->data->extent_count) {
+		blk64_t last_end_logical;
+		last_end_logical = last_extent->start_logical;
+		last_end_logical += last_extent->end_block
+		                                     - last_extent->start_block;
+		if (extent->start_logical != last_end_logical + 1)
+			num_sparse += 1;
+		last_extent = extent;
+		extent++;
+		extent_nr++;
+	}
+	inode->num_sparse = num_sparse;
+	if (!num_sparse)
+		return 0;
+	inode->sparse = malloc(num_sparse * sizeof(struct sparse_extent));
+	if (!inode->sparse)
+		return -1;
+	sparse = inode->sparse;
+	extent_nr = 0;
+	extent = inode->data->extents;
+	last_extent = &tmp_extent;
+	while (extent_nr < inode->data->extent_count) {
+		blk64_t last_end_logical;
+		last_end_logical = last_extent->start_logical;
+		last_end_logical += last_extent->end_block
+		                                     - last_extent->start_block;
+		if (extent->start_logical != last_end_logical + 1) {
+
+			sparse->start = last_end_logical + 1;
+			sparse->num_blocks = extent->start_logical
+			                                        - sparse->start;
+			sparse++;
+		}
+		last_extent = extent;
+		extent++;
+		extent_nr++;
+	}
+	return 0;
+}
 
 static struct inode *read_inode_extents(struct defrag_ctx *c,
                                         ext2_ino_t inode_nr,
@@ -333,9 +384,8 @@ static struct inode *read_inode_extents(struct defrag_ctx *c,
 {
 	struct ext3_extent_header *header;
 	struct tmp_extent first_extent = {
-		.e = {0, 0, 0, NULL, 0},
-		.s = NULL,
-		.last_sparse = NULL,
+		.e = {0, 0, 0, 0},
+		.last_sparse = NULL, /* Not used while reading */
 		.next = NULL
 	};
 	struct tmp_extent *last_extent = NULL;
@@ -352,7 +402,7 @@ static struct inode *read_inode_extents(struct defrag_ctx *c,
 		                       &mempool, header);
 		if (tmp < 0)
 			goto out_error;
-		ret = make_inode_extents(c, &first_extent, inode_nr);
+		ret = make_inode_extents(c, &first_extent, NULL, inode_nr);
 		if (ret) {
 			ret->on_disk = (union on_disk_block *)inode->i_block;
 			ret->metadata = malloc(sizeof(*ret->metadata));
@@ -369,15 +419,13 @@ static struct inode *read_inode_extents(struct defrag_ctx *c,
 		                        &mempool, header, NULL);
 		if (tmp < 0)
 			goto out_error;
-		ret = make_inode_extents(c, &first_extent, inode_nr);
+		ret = make_inode_extents(c, &first_extent, NULL, inode_nr);
 		if (ret) {
 			e2_blkcnt_t num_extents = 0, i;
 			ret->on_disk = (union on_disk_block *)inode->i_block;
-			first_extent.s = NULL;
 			first_extent.e.start_block = 0;
 			first_extent.e.end_block = 0;
 			first_extent.e.start_logical = 0;
-			first_extent.e.sparse = NULL;
 			first_extent.next = NULL;
 			first_extent.last_sparse = NULL;
 			last_extent = NULL;
@@ -411,6 +459,12 @@ static struct inode *read_inode_extents(struct defrag_ctx *c,
 			}
 		}
 	}
+	if (gen_inode_sparse(ret) < 0) {
+		free(ret->data);
+		free(ret->metadata);
+		free(ret);
+		goto out_error;
+	}
 
 	obstack_free(&mempool, NULL);
 	return ret;
@@ -419,13 +473,18 @@ out_error:
 	obstack_free(&mempool, NULL);
 	return NULL;
 }
+
 static struct inode *read_inode_blocks(struct defrag_ctx *c,
                                        ext2_ino_t inode_nr,
                                        struct ext2_inode *inode)
 {
+	struct tmp_sparse first_sparse = {
+		.s = {0, 0},
+		.next = NULL,
+	};
+	struct tmp_sparse *last_sparse = &first_sparse;
 	struct tmp_extent first_extent = {
-		.s = NULL,
-		.last_sparse = NULL,
+		.last_sparse = &last_sparse,
 		.next = NULL
 	};
 	struct tmp_extent *last_extent = NULL;
@@ -496,7 +555,7 @@ static struct inode *read_inode_blocks(struct defrag_ctx *c,
 		else
 			return NULL;
 	}
-	ret = make_inode_extents(c, &first_extent, inode_nr);
+	ret = make_inode_extents(c, &first_extent, &first_sparse, inode_nr);
 	if (ret)
 		ret->on_disk = (union on_disk_block *)inode->i_block;
 	obstack_free(&mempool, NULL);
@@ -520,6 +579,7 @@ long parse_inode(struct defrag_ctx *c, ext2_ino_t inode_nr,
 		c->inodes[inode_nr]->on_disk =
 			                  (union on_disk_block *)inode->i_block;
 		c->inodes[inode_nr]->metadata = NULL;
+		c->inodes[inode_nr]->num_sparse = 0;
 		return 0;
 	}
 	if (inode_nr < EXT2_FIRST_INO(&c->sb)) {

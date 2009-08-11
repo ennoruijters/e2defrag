@@ -54,8 +54,6 @@ struct data_extent {
 	blk64_t start_block;
 	blk64_t end_block;
 	blk64_t start_logical;
-	struct sparse_extent *sparse;
-	/* sparse extent list terminated by a sparse extent of 0 blocks */
 	ext2_ino_t inode_nr;
 	struct rb_node block_rb;
 	struct rb_node size_rb;
@@ -87,6 +85,8 @@ struct inode {
 			} extent[4];
 		} extents;
 	} *on_disk;
+	struct sparse_extent *sparse;
+	int num_sparse;
 };
 
 struct defrag_ctx {

@@ -32,9 +32,9 @@
 #define EXTENT_LEN(extent) \
 	((extent)->end_block - (extent)->start_block + 1)
 
-static int is_sparse(struct data_extent *e, blk64_t lblock)
+static int is_sparse(struct inode *inode, blk64_t lblock)
 {
-	struct sparse_extent *s = e->sparse;
+	struct sparse_extent *s = inode->sparse;
 	if (!s)
 		return 0;
 	while (s->start) {
@@ -51,6 +51,7 @@ static int write_ind_metadata(struct defrag_ctx *c, struct data_extent *e,
                               __u32 ind_block, __u32 *cur_logical,
                               __u32 *cur_block)
 {
+	struct inode *inode = c->inodes[e->inode_nr];
 	__u32 offset = *cur_logical;
 	__u32 ind_blocks = EXT2_ADDR_PER_BLOCK(&c->sb);
 	__u32 blocks_per_ind = 1 + ind_blocks;
@@ -77,7 +78,7 @@ static int write_ind_metadata(struct defrag_ctx *c, struct data_extent *e,
 	while (offset < EXT2_ADDR_PER_BLOCK(&c->sb)
 	       && *cur_block <= e->end_block) {
 		__u32 new_block;
-		if (is_sparse(e, *cur_logical))
+		if (is_sparse(inode, *cur_logical))
 			new_block = 0;
 		else
 			new_block = (*cur_block)++;
@@ -99,6 +100,7 @@ static int write_dind_metadata(struct defrag_ctx *c, struct data_extent *e,
                               __u32 dind_block, __u32 *cur_logical,
                               __u32 *cur_block)
 {
+	struct inode *inode = c->inodes[e->inode_nr];
 	__u32 offset = *cur_logical;
 	__u32 ind_blocks = EXT2_ADDR_PER_BLOCK(&c->sb);
 	__u32 blocks_per_ind = 1 + ind_blocks;
@@ -133,7 +135,7 @@ static int write_dind_metadata(struct defrag_ctx *c, struct data_extent *e,
 	while (offset < EXT2_ADDR_PER_BLOCK(&c->sb)
 	                                        && *cur_block <= e->end_block) {
 		__u32 new_block;
-		if (is_sparse(e, *cur_logical))
+		if (is_sparse(inode, *cur_logical))
 			new_block = 0;
 		else
 			new_block = (*cur_block)++;
@@ -163,6 +165,7 @@ static int write_tind_metadata(struct defrag_ctx *c, struct data_extent *e,
                               __u32 tind_block, __u32 *cur_logical,
                               __u32 *cur_block)
 {
+	struct inode *inode = c->inodes[e->inode_nr];
 	__u32 offset = *cur_logical;
 	__u32 ind_blocks = EXT2_ADDR_PER_BLOCK(&c->sb);
 	__u32 blocks_per_ind = 1 + ind_blocks;
@@ -194,7 +197,7 @@ static int write_tind_metadata(struct defrag_ctx *c, struct data_extent *e,
 	while (offset < EXT2_ADDR_PER_BLOCK(&c->sb)
 	                                        && *cur_block <= e->end_block) {
 		__u32 new_block;
-		if (is_sparse(e, *cur_logical))
+		if (is_sparse(inode, *cur_logical))
 			new_block = 0;
 		else
 			new_block = (*cur_block)++;
@@ -232,7 +235,7 @@ static int write_direct_mapping(struct defrag_ctx *c, struct data_extent *e)
 	for (cur_logical = e->start_logical;
 	     cur_logical < EXT2_IND_LBLOCK(&c->sb) && cur_block <= e->end_block;
 	     cur_logical++) {
-		if (!is_sparse(e, cur_logical))
+		if (!is_sparse(inode, cur_logical))
 			new_block = cur_block++;
 		else
 			new_block = 0;
@@ -246,7 +249,7 @@ static int write_direct_mapping(struct defrag_ctx *c, struct data_extent *e)
 
 	/* Singly indirect blocks */
 	if (cur_logical == EXT2_IND_LBLOCK(&c->sb)) {
-		if (is_sparse(e, cur_logical))
+		if (is_sparse(inode, cur_logical))
 			new_block = 0;
 		else
 			new_block = cur_block++;
@@ -267,7 +270,7 @@ static int write_direct_mapping(struct defrag_ctx *c, struct data_extent *e)
 
 	/* Doubly indirect blocks */
 	if (cur_logical == EXT2_DIND_LBLOCK(&c->sb)) {
-		if (is_sparse(e, cur_logical) || cur_block > e->end_block)
+		if (is_sparse(inode, cur_logical) || cur_block > e->end_block)
 			new_block = 0;
 		else
 			new_block = cur_block++;
@@ -288,7 +291,7 @@ static int write_direct_mapping(struct defrag_ctx *c, struct data_extent *e)
 
 	/* Triply indirect blocks */
 	if (cur_logical == EXT2_TIND_LBLOCK(&c->sb)) {
-		if (is_sparse(e, cur_logical) || cur_block > e->end_block)
+		if (is_sparse(inode, cur_logical) || cur_block > e->end_block)
 			new_block = 0;
 		else
 			new_block = cur_block++;
@@ -311,11 +314,23 @@ out:
 	return 0;
 }
 
-static void extent_to_ext3_extent(struct data_extent *_extent,
+static void extent_to_ext3_extent(const struct inode *inode,
+                                  const struct data_extent *_extent,
                                   struct obstack *mempool)
 {
 	struct data_extent extent = *_extent;
-	struct sparse_extent *sparse = extent.sparse;
+	const struct sparse_extent *sparse;
+	int sparse_nr = 0;
+
+	sparse = inode->sparse;
+	while (sparse_nr < inode->num_sparse
+	                                && sparse->start < extent.start_logical)
+	{
+		sparse++;
+		sparse_nr++;
+	}
+	if (sparse_nr >= inode->num_sparse)
+		sparse = NULL;
 
 	while (extent.start_block <= extent.end_block) {
 		struct ext3_extent new_extent;
@@ -331,8 +346,10 @@ static void extent_to_ext3_extent(struct data_extent *_extent,
 		extent.start_logical += length;
 		if (sparse && sparse->start == extent.start_logical) {
 			extent.start_logical += sparse->num_blocks;
-			sparse++;
-			if (!sparse->num_blocks)
+			sparse_nr++;
+			if (sparse_nr < inode->num_sparse)
+				sparse++;
+			else
 				sparse = NULL;
 		}
 		new_extent.ee_len = length;
@@ -592,7 +609,7 @@ int write_extent_mapping(struct defrag_ctx *c, struct inode *inode)
 
 	obstack_init(&mempool);
 	for (i = 0; i < inode->data->extent_count; i++)
-		extent_to_ext3_extent(inode->data->extents + i, &mempool);
+		extent_to_ext3_extent(inode,inode->data->extents + i, &mempool);
 	num_extents = obstack_object_size(&mempool) / sizeof(*leaves);
 	leaves = obstack_finish(&mempool);
 	if (num_extents > 4) {

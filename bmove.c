@@ -186,10 +186,6 @@ int copy_data(struct defrag_ctx *c, struct allocation *from,
 		if (cur_from > from_extent->end_block) {
 			from_extent++;
 			cur_from = from_extent->start_block;
-			if (from_extent->sparse) {
-				errno = ENOSYS;
-				return -1;
-			}
 		}
 		num_blocks = from_extent->end_block - cur_from + 1;
 		if (to_extent->end_block - cur_dest + 1 < num_blocks)
