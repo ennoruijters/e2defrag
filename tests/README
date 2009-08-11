@@ -1,0 +1,181 @@
+Automated e2fsck tests
+======================
+
+This directory contains the automated test scripts for e2defrag. This
+document first describes how to run the tests and interpret the output.
+The second part explains how to add new scripts.
+
+When fixing any bugs you find, you are strongly encouraged to add tests
+in this directory to test what you are trying to fix so we don't get
+the same bugs later.
+
+
+Running tests
+-------------
+
+To run the entire test-suite, you can just run the run-all-tests.sh
+script. You will get an output like this:
+
+	$ sh ./run-all-tests.sh
+	* t1000-single-file:
+	* 	pass 1: defragmenting ext2 disk with single file
+	* 	pass 2: resulting image should not have file system errors
+	* 	pass 3: resulting image should not be fragmented
+	* 	pass 4: file in image should be unchanged
+	* pass: t1000-single-file
+	* 
+	* t1010-single-sparse-file:
+	* 	pass 1: defragmenting ext2 disk with single sparse file
+	* 	pass 2: resulting image should not have file system errors
+	* 	pass 3: resulting image should not be fragmented
+	* 	FAIL 4: file in image should be unchanged
+	* FAIL: t1010-single-sparse-file
+	* 
+	* passed: 1
+	* failed: 1
+
+This shows the tests performed, and what subtests pass or fail. The last
+two lines show how many tests passed and failed.
+
+You can also run any test individually, like this:
+	$ sh ./t1000-single-file.sh
+	* t1000-single-file:
+	* 	pass 1: defragmenting ext2 disk with single file
+	* 	pass 2: resulting image should not have file system errors
+	* 	pass 3: resulting image should not be fragmented
+	* 	pass 4: file in image should be unchanged
+	* pass: t1000-single-file
+
+
+Writing tests
+-------------
+
+Every test script is a shell script. It should start with the normal
+'#!/bin/sh'. After this, the script should include the test-lib.sh
+library like this:
+
+	. ./test-lib.sh
+
+This library does the following things:
+
+ - Creates an empty directory 'test_trash' and chdir into it. This
+   directory will be deleted when the test ends.
+
+ - Defines some standard helper functions most tests use, like
+   loading image files and running commands with automatic pass/fail
+   output.
+
+All test scripts should end with test_end so the final test/fail line
+is output, the test_trash directory is deleted and the exit status
+is set appropriatly.
+
+
+Naming tests
+------------
+
+All test scripts are named like this:
+
+	tNNNN-test-name.sh
+
+Where N is a decimal digit indicating the type of test.
+
+The first digit signifies the kind of thing we're testing:
+
+	0 - The most basic stuff (i.e. does it even start?)
+	1 - Basic defragmentation commands
+	2 - Interactive mode defragmentation
+	The other digits are reserved for now.
+
+The second digit signifies the kind of disk the command is
+defragmenting:
+
+	0 - No disk
+	1 - ext2/3 with no sparse files
+	2 - ext2/3 with sparse files
+	3 - ext4 (with extents) with no sparse files
+	4 - ext4 (with extents) with sparse files
+	The other digits are reserved for now.
+
+The third digit signifies the command-line switches being tested.
+
+The fourth digit is just for uniqueness (although that's not really
+necessary, it makes management easier).
+
+If you need any image file, it should be a .img.gz (gzipped raw image
+file) in the images directory. No special naming is required, although
+you should keep it descriptive (for special images you might want
+to start it with the test number).
+
+If you need any other files, the preferred name is dNNNN-file-name, where
+NNNN is the same as the test number. Never start it with tNNNN, or
+some scripts will get very confused.
+
+
+Test library (test-lib.sh)
+--------------------------
+
+There are some useful functions defined in test-lib.sh you can use.
+These are:
+
+ - test_begin <test-name>
+
+   You really should start every script with this. Right now it
+   only displays the name, it might do some bookkeeping in the
+   future.
+
+ - load_image <image-name>
+
+   Load the named image file into the current directory. Note that
+   you should leave out the .img.gz extension (so to
+   load my-image.img.gz, you should just pass my-image). This
+   function also automatically decompresses it to become a .img
+   file.
+
+ - test_end
+
+   End every test with this, as it deletes the temporary directory,
+   outputs the final pass/FAIL message and sets the output status
+   correctly (note that your script will exit when calling this).
+
+ - test_and_continue <message> <command>
+
+   This evaluates <command>. If it yield success, the subtest
+   is considered successful and a pass is output. Otherwise, a FAIL
+   is output. <message> should state what is being tested. Even
+   if the subtest fails, your script will continue.
+
+ - test_and_stop_on_error <message> <command>
+
+   Like test_and_continue, except your script immediatly ends if
+   the subtest fails.
+
+ - infra_cmd <command>
+
+   This is the preferred way of performing commands not related to
+   the test. If the command fails, an error message is displayed
+   and the entire test exits without a pass/FAIL. You can abort
+   yourself by setting infra_fail nonzero and performing test_end.
+
+
+Test guidelines
+---------------
+
+ - Never assume a defragmented image file will be identical to the
+   one you had when you ran the test. Changes to the algorithm can
+   change where files end up. Rather check that the files in the
+   image are identical and defragmented correctly.
+
+ - Try to avoid having to mount images. Most people don't have
+   mount privileges when running these tests, or have older kernels
+   that can't mount ext3/4 disk or such. Debugfs is useful if you
+   need to check file correctness and e2fsck can tell you if the
+   image is defragmented. In most cases, even straight image file
+   comparisons are preferable to mounting.
+
+ - Always run e2fsck on any image file you've defragmented. Both
+   to prevent data losing bugs and to keep any other utilities
+   you're using from getting confused.
+
+ - When testing on an image containing multiple files, always check
+   the integrity of all the files, not just the one you're actually
+   defragmenting.
