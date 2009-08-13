@@ -25,7 +25,7 @@ static int __move_block_range(struct defrag_ctx *c, blk64_t from, blk64_t to,
 	off_t from_offset, to_offset, tmp;
 	ssize_t size;
 
-	if (global_settings.simulate)
+	if (global_settings.simulate || global_settings.no_data_move)
 		return 0;
 	if (!copy_buffer) {
 		copy_buffer = malloc(copy_buffer_size);
@@ -69,7 +69,7 @@ static int __move_block_range(struct defrag_ctx *c, blk64_t from, blk64_t to,
 	int ret, size;
 	loff_t from_offset, to_offset;
 
-	if (global_settings.simulate)
+	if (global_settings.simulate || global_settings.no_data_move)
 		return 0;
 	if (!has_splice)
 		return __move_block_range_nosplice(c, from, to, nr_blocks);

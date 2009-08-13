@@ -13,6 +13,7 @@ typedef __u32 ext2_ino_t;
 struct settings {
 	unsigned int simulate : 1;
 	unsigned int interactive : 1;
+	unsigned int no_data_move : 1;
 };
 
 extern struct settings global_settings;

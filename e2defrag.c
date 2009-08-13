@@ -12,7 +12,7 @@ struct settings global_settings = {
 
 void usage(int retval)
 {
-	printf("Usage: e2defrag [-s|--simulate] [--] <disk>\n");
+	printf("Usage: e2defrag [-s|--simulate] [-i|--interactive] [-d|--no-data-move] [--] <disk>\n");
 	exit(retval);
 }
 
@@ -22,6 +22,8 @@ int parse_long_option(int argc, char **argv, int *idx)
 		global_settings.simulate = 1;
 	else if (strcmp(argv[*idx], "--interactive") == 0)
 		global_settings.interactive = 1;
+	else if (strcmp(argv[*idx], "--no-data-move") == 0)
+		global_settings.no_data_move = 1;
 	else
 		return EXIT_FAILURE;
 	return 0;
@@ -42,6 +44,9 @@ int parse_options(int argc, char *argv[], char **filename)
 				break;
 			case 'i':
 				global_settings.interactive = 1;
+				break;
+			case 'd':
+				global_settings.no_data_move = 1;
 				break;
 			case '-':
 				if (argv[i][2] != '0') {
