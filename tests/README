@@ -90,10 +90,10 @@ The second digit signifies the kind of disk the command is
 defragmenting:
 
 	0 - No disk
-	1 - ext2/3 with no sparse files
-	2 - ext2/3 with sparse files
-	3 - ext4 (with extents) with no sparse files
-	4 - ext4 (with extents) with sparse files
+	1 - ext2/3 with only normal files
+	2 - ext2/3 with special (e.g. sparse) blocks
+	3 - ext4 (with extents) with only normal extents
+	4 - ext4 (with extents) with special (e.g. sparse) extents
 	The other digits are reserved for now.
 
 The third digit signifies the command-line switches being tested.
