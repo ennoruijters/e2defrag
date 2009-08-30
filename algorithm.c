@@ -56,6 +56,42 @@ static struct free_extent *find_free_extent(struct defrag_ctx *c,
 	return target;
 }
 
+static e2_blkcnt_t real_extent_count(struct allocation *alloc)
+{
+	e2_blkcnt_t ret = 1;
+	int i;
+
+	for (i = 1; i < alloc->extent_count; i++) {
+		if (alloc->extents[i].start_block !=
+		    alloc->extents[i - 1].end_block + 1)
+		{
+			ret++;
+		}
+	}
+	return ret;
+}
+
+/* Returns whether the given allocation has more extents than is strictly
+ * needed on the disk. This function is slightly pessimistic (return true
+ * for some allocations that are not really fragmented)
+ */
+static int is_fragmented(struct defrag_ctx *c, struct allocation *alloc)
+{
+	e2_blkcnt_t flex_bg_size = 1, min_extents;
+
+	if (EXT2_HAS_INCOMPAT_FEATURE(&c->sb, EXT4_FEATURE_INCOMPAT_FLEX_BG))
+		flex_bg_size = 1 << (c->sb.s_log_groups_per_flex);
+
+	flex_bg_size *= c->sb.s_blocks_per_group;
+	min_extents = (alloc->block_count + flex_bg_size - 1) / flex_bg_size;
+	if (alloc->extent_count <= min_extents)
+		return 0;
+
+	if (real_extent_count(alloc) <= min_extents)
+		return 0;
+	return 1;
+}
+
 static int try_pack_extent(struct defrag_ctx *c, struct data_extent *data,
                            struct free_extent *away_from)
 {
@@ -244,7 +280,7 @@ int do_whole_disk(struct defrag_ctx *c)
 			struct inode *inode = c->inodes[i];
 			if (!inode)
 				continue;
-			if (inode->data->extent_count > 1) {
+			if (is_fragmented(c, inode->data)) {
 				ret = do_one_inode(c, i);
 				if (ret < 0)
 					return ret;
@@ -255,7 +291,7 @@ int do_whole_disk(struct defrag_ctx *c)
 					optimal = 0;
 			}
 			if (inode->metadata &&
-			    inode->metadata->extent_count > 1)
+			    is_fragmented(c, inode->metadata))
 			{
 				ret = write_inode_metadata(c, inode);
 				if (ret < 0)
