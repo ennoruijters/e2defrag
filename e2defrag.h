@@ -58,6 +58,7 @@ struct data_extent {
 	ext2_ino_t inode_nr;
 	struct rb_node block_rb;
 	struct rb_node size_rb;
+	unsigned int uninit : 1;
 };
 
 struct free_extent {
@@ -144,10 +145,9 @@ struct allocation *get_blocks(struct defrag_ctx *c, e2_blkcnt_t num_blocks,
 
 /* inode.c */
 int try_extent_merge(struct defrag_ctx *, struct inode *, struct data_extent *);
-int split_extent(struct defrag_ctx *c, struct inode *inode,
-                 struct data_extent *extent, blk64_t new_end_block);
 blk64_t get_physical_block(struct inode *inode, blk64_t logical_block,
                            int *extent_nr);
+blk64_t get_logical_block(struct inode *inode, blk64_t phys_block);
 int is_metadata(struct defrag_ctx *c, struct data_extent *extent);
 
 /* interactive.c */

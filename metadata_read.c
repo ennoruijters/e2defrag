@@ -50,7 +50,8 @@ static void add_sparse(struct tmp_sparse **last_sparse, blk64_t first_block,
 static int do_blocks(struct tmp_extent *first_extent,
                      struct tmp_extent **last_extent,
                      struct obstack *mempool,
-                     blk64_t block, blk64_t logical_block, e2_blkcnt_t nblk)
+                     blk64_t block, blk64_t logical_block, e2_blkcnt_t nblk,
+                     int uninit)
 {
 	struct tmp_extent *le = *last_extent;
 	if (block == 0 && *last_extent == NULL) {
@@ -61,10 +62,11 @@ static int do_blocks(struct tmp_extent *first_extent,
 		le->e.start_block = block;
 		le->e.end_block = block + nblk - 1;
 		le->e.start_logical = logical_block;
+		le->e.uninit = uninit;
 		le->next = NULL;
 		return 1;
 	} else if (block != 0) {
-		if (block != le->e.end_block + 1) {
+		if (block != le->e.end_block + 1 || uninit != le->e.uninit) {
 			le->next = obstack_alloc(mempool,
 			                         sizeof(struct tmp_extent));
 			*last_extent = le->next;
@@ -72,6 +74,7 @@ static int do_blocks(struct tmp_extent *first_extent,
 			le->next = NULL;
 			le->e.start_block = block;
 			le->e.start_logical = logical_block;
+			le->e.uninit = uninit;
 		}
 		le->e.end_block = block + nblk - 1;
 		return 1;
@@ -97,7 +100,8 @@ static int do_ind_block(struct defrag_ctx *c, struct tmp_extent *first_extent,
 		     i < EXT2_ADDR_PER_BLOCK(&c->sb) && *nblocks;
 		     i++, logical_block++) {
 			*nblocks -= do_blocks(first_extent, last_extent,
-			                      mempool, ind[i], logical_block,1);
+			                      mempool, ind[i], logical_block,1,
+			                      0);
 			count++;
 		}
 		return count;
@@ -125,7 +129,8 @@ static long do_dind_block(struct defrag_ctx *c, struct tmp_extent *first_extent,
 		for (i = 0; i < EXT2_ADDR_PER_BLOCK(&c->sb) && *nblocks; i++) {
 			int tmp;
 			*nblocks -= do_blocks(first_extent, last_extent,
-			                      mempool, ind[i], logical_block,1);
+			                      mempool, ind[i], logical_block,1,
+			                      0);
 			logical_block++;
 			tmp = do_ind_block(c, first_extent, last_extent,
 			                   mempool, ind[i], logical_block,
@@ -164,7 +169,8 @@ static long do_tind_block(struct defrag_ctx *c, struct tmp_extent *first_extent,
 		for (i = 0; i < EXT2_ADDR_PER_BLOCK(&c->sb) && *nblocks; i++) {
 			long tmp;
 			*nblocks -= do_blocks(first_extent, last_extent,
-			                      mempool, ind[i], logical_block,1);
+			                      mempool, ind[i], logical_block,1,
+			                      0);
 			logical_block++;
 			tmp = do_dind_block(c, first_extent, last_extent,
 			                    mempool, ind[i], logical_block,
@@ -254,6 +260,7 @@ static struct inode *make_inode_extents(struct defrag_ctx *c,
 		ret->data->block_count +=
 		                      tmp->e.end_block - tmp->e.start_block + 1;
 		ret->data->extents[i].start_logical = tmp->e.start_logical;
+		ret->data->extents[i].uninit = tmp->e.uninit;
 		if (tmp->next != NULL) {
 			blk64_t next_logical;
 			next_logical = tmp->next->e.start_logical;
@@ -276,9 +283,15 @@ static int read_extent_leaf(struct tmp_extent *first_extent,
 		return 0;
 	}
 	for (i = 0; i < header->eh_entries; i++) {
+		uint16_t length = extents[i].ee_len;
+		char uninit = 0;
+		if (length > EXT_INIT_MAX_LEN) {
+			uninit = 1;
+			length -= EXT_INIT_MAX_LEN;
+		}
 		ret = do_blocks(first_extent, last_extent, mempool,
 		                EE_BLOCK(&extents[i]), extents[i].ee_block,
-				extents[i].ee_len);
+		                length, uninit);
 		if (ret < 0)
 			return ret;
 	}
@@ -304,7 +317,7 @@ static int read_extent_index(struct defrag_ctx *c,
 		if (metadata_only) {
 			ret = do_blocks(first_extent, last_extent, mempool,
 			                EI_BLOCK(&extents[i]),
-			                (*metadata_only)++, 1);
+			                (*metadata_only)++, 1, 0);
 			if (ret < 0)
 				return ret;
 		}
@@ -499,7 +512,7 @@ static struct inode *read_inode_blocks(struct defrag_ctx *c,
 
 	for (i = 0; i <= EXT2_NDIR_BLOCKS && nblocks; i++, logical_block++) {
 		nblocks -= do_blocks(&first_extent, &last_extent, &mempool,
-		                     blocks[i], logical_block, 1);
+		                     blocks[i], logical_block, 1, 0);
 	}
 	if (nblocks) {
 		long tmp;
@@ -515,7 +528,7 @@ static struct inode *read_inode_blocks(struct defrag_ctx *c,
 		long ret;
 
 		ret =  do_blocks(&first_extent, &last_extent, &mempool,
-		                 blocks[EXT2_DIND_BLOCK], logical_block, 1);
+		                 blocks[EXT2_DIND_BLOCK], logical_block, 1, 0);
 		if (ret >= 0) {
 			nblocks -= ret;
 			logical_block += ret;
@@ -537,7 +550,7 @@ static struct inode *read_inode_blocks(struct defrag_ctx *c,
 		long ret;
 
 		ret =  do_blocks(&first_extent, &last_extent, &mempool,
-		                 blocks[EXT2_TIND_BLOCK], logical_block, 1);
+		                 blocks[EXT2_TIND_BLOCK], logical_block, 1, 0);
 		if (ret >= 0) {
 			nblocks -= ret;
 			logical_block += ret;

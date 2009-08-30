@@ -338,8 +338,10 @@ static void extent_to_ext3_extent(const struct inode *inode,
 		new_extent.ee_block = extent.start_logical;
 		EE_BLOCK_SET(&new_extent, extent.start_block);
 		length = extent.end_block - extent.start_block + 1;
-		if (length > EXT_INIT_MAX_LEN)
+		if (!extent.uninit && length > EXT_INIT_MAX_LEN)
 			length = EXT_INIT_MAX_LEN;
+		else if (extent.uninit && length > EXT_UNINIT_MAX_LEN)
+			length = EXT_UNINIT_MAX_LEN;
 		if (sparse && sparse->start < extent.start_logical + length)
 			length = sparse->start - extent.start_logical;
 		extent.start_block += length;
@@ -352,7 +354,10 @@ static void extent_to_ext3_extent(const struct inode *inode,
 			else
 				sparse = NULL;
 		}
-		new_extent.ee_len = length;
+		if (!extent.uninit)
+			new_extent.ee_len = length;
+		else
+			new_extent.ee_len = length + EXT_INIT_MAX_LEN;
 		if (length)
 			obstack_grow(mempool, &new_extent, sizeof(new_extent));
 	}

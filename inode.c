@@ -105,37 +105,6 @@ blk64_t get_physical_block(struct inode *inode, blk64_t logical_block,
 	return ret;
 }
 
-/* Note that this function may realloc inode (and therefore extent) */
-int split_extent(struct defrag_ctx *c,
-                 struct inode *inode,
-                 struct data_extent *extent,
-                 blk64_t new_end_block)
-{
-	blk64_t e2_logical_start;
-	size_t nbytes;
-	ext2_ino_t inode_nr = extent->inode_nr;
-	int extent_nr, ret;
-	e2_logical_start = get_logical_block(inode, new_end_block + 1);
-	inode_remove_from_trees(c, inode);
-	extent_nr = extent - inode->data->extents;
-	inode->data->extent_count += 1;
-	nbytes = sizeof(struct inode);
-	nbytes += inode->data->extent_count * sizeof(struct data_extent);
-	inode = realloc(inode, nbytes);
-	if (!inode)
-		return -1;
-	c->inodes[inode_nr] = inode;
-	memmove(&inode->data->extents[extent_nr + 1], &inode->data->extents[extent_nr],
-	        (inode->data->extent_count - extent_nr - 1) * sizeof(struct data_extent));
-	inode->data->extents[extent_nr + 1].start_block = new_end_block + 1;
-	inode->data->extents[extent_nr + 1].start_logical = e2_logical_start;
-	inode->data->extents[extent_nr].end_block = new_end_block;
-	for (extent_nr = 0; extent_nr < inode->data->extent_count; extent_nr++) {
-		insert_data_extent(c, &inode->data->extents[extent_nr]);
-	}
-	return ret;
-}
-
 static int merge_extents(struct inode *inode,
                          struct data_extent *extent1,
                          struct data_extent *extent2)
@@ -169,7 +138,9 @@ int try_extent_merge(struct defrag_ctx *c,
 		struct data_extent *prev = inode->data->extents + pos - 1;
 		struct data_extent *next = inode->data->extents + pos + 1;
 		oldcount = count;
-		if (pos > 0 && prev->end_block == extent->start_block - 1) {
+		if (pos > 0 && prev->end_block == extent->start_block - 1
+		    && extent->uninit == prev->uninit)
+		{
 			if (!removed_from_tree) {
 				inode_remove_from_trees(c, inode);
 				removed_from_tree = 1;
@@ -186,7 +157,9 @@ int try_extent_merge(struct defrag_ctx *c,
 		}
 
 		if ((pos + 1) < inode->data->extent_count
-		    && extent->end_block == next->start_block - 1) {
+		    && extent->end_block == next->start_block - 1
+		    && extent->uninit == next->uninit)
+		{
 			if (!removed_from_tree) {
 				inode_remove_from_trees(c, inode);
 				removed_from_tree = 1;

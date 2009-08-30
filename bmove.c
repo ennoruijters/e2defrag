@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <sys/mman.h>
 #include <stdio.h>
+#include <string.h>
 #include "e2defrag.h"
 #include "extree.h"
 
@@ -112,6 +113,44 @@ static int __move_block_range(struct defrag_ctx *c, blk64_t from, blk64_t to,
 }
 #endif /* NOSPLICE */
 
+/* This function splits and extent in two. The first extent will contain the
+ * blocks from the start of the given extent up to new_end_block. The second
+ * extent will contain the blocks from new_end_block+1 up to the end of the
+ * given extent. The relative locations of the new extents in the allocation
+ * will be that of the old extent.
+ * It is important that none of the extents in the allocation are on any
+ * extent trees (as the allocation will be freed).
+ */
+static struct allocation *split_extent(struct defrag_ctx *c,
+                                       struct allocation *alloc,
+                                       struct data_extent *extent,
+                                       blk64_t new_end_block,
+                                       blk64_t new_start_logical)
+{
+	size_t nbytes;
+	int extent_nr;
+
+	for (extent_nr = 0; extent_nr < alloc->extent_count; extent_nr++)
+		rb_remove_data_extent(c, &alloc->extents[extent_nr]);
+
+	extent_nr = extent - alloc->extents;
+	alloc->extent_count += 1;
+	nbytes = sizeof(struct allocation);
+	nbytes += alloc->extent_count * sizeof(struct data_extent);
+	alloc = realloc(alloc, nbytes);
+	if (!alloc)
+		return NULL;
+	memmove(&alloc->extents[extent_nr + 1], &alloc->extents[extent_nr],
+	                               (alloc->extent_count - extent_nr - 1)
+	                               * sizeof(struct data_extent));
+	alloc->extents[extent_nr + 1].start_block = new_end_block + 1;
+	alloc->extents[extent_nr + 1].start_logical = new_start_logical;
+	alloc->extents[extent_nr].end_block = new_end_block;
+	for (extent_nr = 0; extent_nr < alloc->extent_count; extent_nr++)
+		insert_data_extent(c, &alloc->extents[extent_nr]);
+	return alloc;
+}
+
 /* Target must have exactly one extent (for now) and exactly as many blocks
    as the source extent. Target is no longer valid afterwards and must be
    cleaned up by the caller. */
@@ -176,27 +215,48 @@ int copy_data(struct defrag_ctx *c, struct allocation *from,
 
 	to_extent = target->extents;
 	from_extent = from->extents;
+	to_extent->uninit = from_extent->uninit;
 	cur_dest = to_extent->start_block;
 	cur_from = from_extent->start_block;
 
 	while (blocks_copied < from->block_count) {
 		e2_blkcnt_t num_blocks;
 		int ret;
-		if (cur_dest > to_extent->end_block) {
-			to_extent++;
-			cur_dest = to_extent->start_block;
-		}
 		if (cur_from > from_extent->end_block) {
 			from_extent++;
 			cur_from = from_extent->start_block;
+		}
+		if (cur_dest > to_extent->end_block) {
+			to_extent++;
+			to_extent->uninit = from_extent->uninit;
+			cur_dest = to_extent->start_block;
+		}
+		if (from_extent->uninit != to_extent->uninit) {
+			struct allocation *new_target;
+			struct inode *inode = c->inodes[to_extent->inode_nr];
+			blk64_t new_start_logical;
+			int extent_nr = to_extent - target->extents;
+			new_start_logical = get_logical_block(inode, cur_from);
+			new_target = split_extent(c, target, to_extent,
+			                          cur_dest - 1,
+						  new_start_logical);
+			if (!new_target)
+				return -1;
+			target = new_target;
+			to_extent = &target->extents[extent_nr + 1];
+			to_extent->uninit = from_extent->uninit;
+			assert(cur_dest == to_extent->start_block);
 		}
 		num_blocks = from_extent->end_block - cur_from + 1;
 		if (to_extent->end_block - cur_dest + 1 < num_blocks)
 			num_blocks = to_extent->end_block - cur_dest + 1;
 
-		ret = __move_block_range(c, cur_from, cur_dest, num_blocks);
-		if (ret)
-			return ret;
+		if (!to_extent->uninit) {
+			ret = __move_block_range(c, cur_from, cur_dest,
+			                                            num_blocks);
+			if (ret)
+				return ret;
+		}
 
 		blocks_copied += num_blocks;
 		cur_dest += num_blocks;

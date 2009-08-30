@@ -14,8 +14,9 @@ void dump_trees(struct defrag_ctx *c, int to_dump)
 	n = rb_first(&c->extents_by_block);
 	while (n && (to_dump & 2)) {
 		struct data_extent *f = rb_entry(n,struct data_extent,block_rb);
-		printf("U: %llu-%llu(%llu) of %u\n", f->start_block,
-		       f->end_block, f->start_logical, f->inode_nr);
+		printf("U: %llu-%llu(%llu)%s of %u\n", f->start_block,
+		       f->end_block, f->start_logical,
+		       f->uninit ? "U" : "", f->inode_nr);
 		n = rb_next(n);
 	}
 }
