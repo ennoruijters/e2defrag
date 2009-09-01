@@ -190,8 +190,13 @@ int move_data_extent(struct defrag_ctx *c, struct data_extent *extent_to_copy,
 		errno = EINVAL;
 		return -1;
 	}
-	ret = __move_block_range(c, extent_to_copy->start_block,
-	                         target->extents[0].start_block, blk_cnt);
+	if (!extent_to_copy->uninit) {
+		ret = __move_block_range(c, extent_to_copy->start_block,
+	                                 target->extents[0].start_block,
+		                         blk_cnt);
+	} else {
+		ret = 0;
+	}
 	if (!ret)
 		ret = fdatasync(c->fd);
 	if (ret)

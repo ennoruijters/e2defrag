@@ -285,3 +285,19 @@ struct allocation *get_blocks(struct defrag_ctx *c, e2_blkcnt_t num_blocks,
 	free(nodes);
 	return ret;
 }
+
+struct allocation *get_range_allocation(blk64_t start_block,
+                                        e2_blkcnt_t num_blocks,
+                                        blk64_t start_logical)
+{
+	struct allocation *ret = malloc(sizeof(struct allocation)
+	                                + sizeof(struct data_extent));
+	if (!ret)
+		return NULL;
+	ret->block_count = num_blocks;
+	ret->extent_count = 1;
+	ret->extents[0].start_block = start_block;
+	ret->extents[0].end_block = start_block + num_blocks - 1;
+	ret->extents[0].start_logical = start_logical;
+	return ret;
+}

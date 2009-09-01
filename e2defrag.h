@@ -133,6 +133,7 @@ struct defrag_ctx {
 
 /* algorithm.c */
 int consolidate_free_space(struct defrag_ctx *c);
+int try_improve_inode(struct defrag_ctx *c, ext2_ino_t inode_nr);
 int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr);
 int do_whole_disk(struct defrag_ctx *c);
 
@@ -159,6 +160,9 @@ int deallocate_blocks(struct defrag_ctx *c, struct allocation *space);
 int allocate(struct defrag_ctx *c, struct allocation *space);
 struct allocation *get_blocks(struct defrag_ctx *c, e2_blkcnt_t num_blocks,
                               ext2_ino_t inode_nr, blk64_t first_logical);
+struct allocation *get_range_allocation(blk64_t start_block,
+                                        e2_blkcnt_t num_blocks,
+                                        blk64_t start_logical);
 
 /* inode.c */
 int try_extent_merge(struct defrag_ctx *, struct inode *, struct data_extent *);

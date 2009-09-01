@@ -221,6 +221,65 @@ int consolidate_free_space(struct defrag_ctx *c)
 	return 1;
 }
 
+/*
+ * Try to improve the fragmentation status of the file by moving one single
+ * extent to a position immediatly following the position of the extent
+ * before it.
+ */
+int try_improve_inode(struct defrag_ctx *c, ext2_ino_t inode_nr)
+{
+	struct inode *inode = c->inodes[inode_nr];
+	struct allocation *data = inode->data;
+	int i, tmp, ret = 0;
+
+	if (!is_fragmented(c, data))
+		return 0;
+	for (i = 1; i < data->extent_count; i++) {
+		struct data_extent *cur_extent = &data->extents[i];
+		struct data_extent *prev_extent = &data->extents[i - 1];
+		struct free_extent *target;
+		target = containing_free_extent(c, prev_extent->end_block + 1);
+		if (target
+		    && target->end_block - target->start_block
+		       >= cur_extent->end_block - cur_extent->start_block)
+		{
+			struct allocation *target_alloc;
+			e2_blkcnt_t num_blocks;
+			num_blocks = cur_extent->end_block
+				             - cur_extent->start_block + 1;
+			target_alloc = get_range_allocation(
+				                     prev_extent->end_block + 1,
+				                     num_blocks,
+				                     cur_extent->start_logical);
+			if (!target_alloc)
+				return -1;
+			if (global_settings.interactive) {
+				printf("Moving extent from %llu to %llu (%llu)\n",
+				       cur_extent->start_block,
+				       target_alloc->extents[0].start_block,
+				       cur_extent->end_block
+				               - cur_extent->start_block + 1);
+			}
+			target_alloc->extents[0].inode_nr = inode_nr;
+			target_alloc->extents[0].uninit = cur_extent->uninit;
+			tmp = allocate(c, target_alloc);
+			if (tmp < 0) {
+				free(target_alloc);
+				return tmp;
+			}
+			tmp = move_data_extent(c, cur_extent, target_alloc);
+			if (tmp < 0) {
+				free(target_alloc);
+				return tmp;
+			}
+			data = inode->data;
+			i--; /* To allow for merged extents */
+			ret++;
+		}
+	}
+	return ret;
+}
+
 /* Very naive algorithm for now: Just try to find a combination of free
  * extent big enough to fit the whole file, but consisting of fewer extents
  * than the current one.

@@ -143,6 +143,7 @@ static int merge_extents(struct inode *inode,
 	return 0;
 }
 
+/* If you value your data, you shouldn't call this with a metadata extent */
 int try_extent_merge(struct defrag_ctx *c,
                      struct inode *inode,
                      struct data_extent *extent)
@@ -189,18 +190,16 @@ int try_extent_merge(struct defrag_ctx *c,
 	}
 
 	if (count) {
-		struct inode *new_inode;
-		ext2_ino_t inode_nr = extent->inode_nr;
-		size_t num_bytes = sizeof(*inode);
-		num_bytes += inode->data->extent_count * sizeof(*inode->data->extents);
+		struct allocation *new_alloc;
+		size_t num_bytes = sizeof(struct allocation);
+		num_bytes += inode->data->extent_count
+		                                   * sizeof(struct data_extent);
 
-		new_inode = realloc(inode, num_bytes);
+		new_alloc = realloc(inode->data, num_bytes);
 		/* merge_extents has already consilidated everything to the
-		 * beginning of the inode object */
-		if (new_inode) {
-			c->inodes[inode_nr] = new_inode;
-			inode = new_inode;
-		}
+		 * beginning of the allocation object */
+		if (new_alloc)
+			inode->data = new_alloc;
 	}
 
 	if (removed_from_tree) {

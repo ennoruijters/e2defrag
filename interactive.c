@@ -98,6 +98,7 @@ int defrag_file_interactive(struct defrag_ctx *c)
 	e2_blkcnt_t biggest_size = 0;
 	int ret, num_biggest = 0;
 	ext2_ino_t inode_nr;
+	char improve;
 
 	print_fragged_inodes(c);
 	if (n)
@@ -112,7 +113,18 @@ int defrag_file_interactive(struct defrag_ctx *c)
 	do {
 		long number;
 		printf("WARNING: UNTESTED!\n");
-		printf("Specify inode number (or -1 for free space consolidation, or 0 to exit): ");
+		printf("Specify inode number.\n");
+		printf("You can enter -1 for free space consolidation, or 0 to exit.\n");
+		printf("You can also precede the inode number by an 'i' to improve rather than defragment the file.\n");
+		printf("Inode number: ");
+		fflush(stdout);
+		number = getchar();
+		if (number == 'i' || number == 'I') {
+			improve = 1;
+		} else {
+			improve = 0;
+			ungetc(number, stdin);
+		}
 		if (getnumber(&number, -2, c->sb.s_inodes_count) < 0) {
 			switch (errno) {
 			case EDOM:
@@ -156,7 +168,10 @@ int defrag_file_interactive(struct defrag_ctx *c)
 		printf("Inode has no data associated\n");
 		return 0;
 	}
-	ret = do_one_inode(c, inode_nr);
+	if (!improve)
+		ret = do_one_inode(c, inode_nr);
+	else
+		ret = try_improve_inode(c, inode_nr);
 	if (ret < 0)
 		printf("Error: %s\n", strerror(errno));
 	printf("Inode now has %llu fragments\n",
