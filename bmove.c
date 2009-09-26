@@ -45,14 +45,17 @@ static int __move_block_range(struct defrag_ctx *c, blk64_t from, blk64_t to,
 
 	if (global_settings.simulate || global_settings.no_data_move)
 		return 0;
-	if (!copy_buffer) {
-		copy_buffer = malloc(copy_buffer_size);
-		if (!copy_buffer)
+	if (!copy_buffer || copy_buffer == MAP_FAILED) {
+		copy_buffer = mmap(NULL, copy_buffer_size,
+		                   PROT_READ | PROT_WRITE,
+		                   MAP_PRIVATE | MAP_ANONYMOUS, c->fd, 0);
+		if (copy_buffer == MAP_FAILED)
 			return -1;
 	}
 	from_offset = from * EXT2_BLOCK_SIZE(&c->sb);
 	to_offset = to * EXT2_BLOCK_SIZE(&c->sb);
 	size = EXT2_BLOCK_SIZE(&c->sb) * nr_blocks;
+	posix_fadvise(c->fd, from_offset, size, POSIX_FADV_WILLNEED);
 	while (size > 0) {
 		ssize_t to_write;
 		tmp = lseek(c->fd, from_offset, SEEK_SET);
@@ -63,6 +66,7 @@ static int __move_block_range(struct defrag_ctx *c, blk64_t from, blk64_t to,
 		if (ret <= 0)
 			return ret;
 
+		posix_fadvise(c->fd, from_offset, ret, POSIX_FADV_DONTNEED);
 		size -= ret;
 		to_write = ret;
 		from_offset += ret;
@@ -71,10 +75,19 @@ static int __move_block_range(struct defrag_ctx *c, blk64_t from, blk64_t to,
 			ret = write(c->fd, copy_buffer, to_write);
 			if (ret <= 0)
 				return ret;
+			posix_fadvise(c->fd, to_offset, ret,
+			              POSIX_FADV_DONTNEED);
+			madvise(copy_buffer, ret, MADV_DONTNEED);
 			to_write -= ret;
 			to_offset += ret;
 		}
 	}
+	size = EXT2_BLOCK_SIZE(&c->sb) * nr_blocks;
+	from_offset = from * EXT2_BLOCK_SIZE(&c->sb);
+	to_offset = to * EXT2_BLOCK_SIZE(&c->sb);
+	posix_fadvise(c->fd, from_offset, size, POSIX_FADV_DONTNEED);
+	posix_fadvise(c->fd, to_offset, size, POSIX_FADV_DONTNEED);
+	madvise(copy_buffer, copy_buffer_size, MADV_DONTNEED);
 	return 0;
 }
 
