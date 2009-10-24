@@ -160,6 +160,7 @@ static int try_pack_extent(struct defrag_ctx *c, struct data_extent *data,
 	new_alloc->extents[0].end_block += data->end_block - data->start_block;
 	new_alloc->extents[0].start_logical = data->start_logical;
 	new_alloc->extents[0].inode_nr = data->inode_nr;
+	new_alloc->extents[0].uninit = data->uninit;
 	ret = allocate(c, new_alloc);
 	if (ret) {
 		free(new_alloc);
