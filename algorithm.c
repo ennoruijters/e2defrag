@@ -114,10 +114,14 @@ static int try_pack_extent(struct defrag_ctx *c, struct data_extent *data,
 {
 	struct free_extent *target;
 	struct allocation *new_alloc;
+	struct data_extent *before;
 	blk64_t new_start;
 	e2_blkcnt_t min_size, max_size;
 	int ret;
 
+	before = containing_data_extent(c, data->start_block - 1);
+	if (before && before->inode_nr == data->inode_nr)
+		return ENOSPC; /* TODO: proper multi-extent moves */
 	min_size = data->end_block - data->start_block + 1;
 	/* Don't add 1 to max_size (or rather, subtract one from the final
 	   result, so we actually gain something by moving */
@@ -364,7 +368,7 @@ int do_whole_disk(struct defrag_ctx *c)
 				else if (ret == 0)
 					changed = 1;
 				/* ret == 1 means could not improve */
-				if (inode->data->extent_count > 1)
+				if (is_fragmented(c, inode->data))
 					optimal = 0;
 			}
 			if (inode->metadata &&
@@ -377,7 +381,7 @@ int do_whole_disk(struct defrag_ctx *c)
 				/* TODO: Too coupled with the algorithm.
 				   Will break on improved algorithm later.
 				   */
-				if (inode->metadata->extent_count > 1)
+				if (is_fragmented(c, inode->metadata))
 					optimal = 0;
 			}
 		}
