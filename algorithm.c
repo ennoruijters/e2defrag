@@ -314,6 +314,8 @@ int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr)
 		else
 			return 1;
 	}
+	if (target->extent_count < 2)
+		answer = 'y';
 	while (!answer && global_settings.interactive) {
 		printf("Possible allocation has %llu fragments. Continue? ",
 		       target->extent_count);
