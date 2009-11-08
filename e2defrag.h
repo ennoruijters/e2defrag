@@ -149,7 +149,7 @@ int move_file_range(struct defrag_ctx *c, ext2_ino_t inode, blk64_t from,
 int move_data_extent(struct defrag_ctx *c, struct data_extent *extent_to_copy,
                      struct allocation *target);
 int copy_data(struct defrag_ctx *c, struct allocation *from,
-              struct allocation *target);
+              struct allocation **target);
 
 /* debug.c */
 void dump_trees(struct defrag_ctx *c, int to_dump);

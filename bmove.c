@@ -148,8 +148,8 @@ static int __move_block_range(struct defrag_ctx *c, blk64_t from, blk64_t to,
  * extent will contain the blocks from new_end_block+1 up to the end of the
  * given extent. The relative locations of the new extents in the allocation
  * will be that of the old extent.
- * It is important that none of the extents in the allocation are on any
- * extent trees (as the allocation will be freed).
+ * The extents in the old allocation will be removed from the trees, realloced
+ * and the new extents placed in the trees.
  */
 static struct allocation *split_extent(struct defrag_ctx *c,
                                        struct allocation *alloc,
@@ -237,12 +237,14 @@ int move_data_extent(struct defrag_ctx *c, struct data_extent *extent_to_copy,
 }
 
 int copy_data(struct defrag_ctx *c, struct allocation *from,
-              struct allocation *target)
+              struct allocation **ret_target)
 {
 	struct data_extent *from_extent, *to_extent;
+	struct allocation *target;
 	blk64_t cur_dest, cur_from;
 	e2_blkcnt_t blocks_copied = 0;
 
+	target = *ret_target;
 	if (from->block_count != target->block_count) {
 		errno = EINVAL;
 		return 0;
@@ -277,7 +279,7 @@ int copy_data(struct defrag_ctx *c, struct allocation *from,
 						  new_start_logical);
 			if (!new_target)
 				return -1;
-			target = new_target;
+			target = *ret_target = new_target;
 			to_extent = &target->extents[extent_nr + 1];
 			to_extent->uninit = from_extent->uninit;
 			assert(cur_dest == to_extent->start_block);

@@ -225,8 +225,10 @@ static int set_inode_sparse(struct inode *inode, struct tmp_sparse *first)
 		current = current->next;
 	}
 	inode->num_sparse = nr_sparse;
-	if (nr_sparse == 0)
+	if (nr_sparse == 0) {
+		inode->sparse = NULL;
 		return 0;
+	}
 	inode->sparse = malloc(sizeof(struct sparse_extent) * nr_sparse);
 	if (!inode->sparse)
 		return -1;

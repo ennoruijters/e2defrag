@@ -332,7 +332,7 @@ int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr)
 			free(target);
 			return ret;
 		}
-		ret = copy_data(c, inode->data, target);
+		ret = copy_data(c, inode->data, &target);
 		if (!ret) {
 			ret = deallocate_blocks(c, inode->data);
 			inode->data = target;

@@ -54,7 +54,7 @@ static int is_sparse(struct inode *inode, blk64_t lblock)
 	struct sparse_extent *s = inode->sparse;
 	if (!s)
 		return 0;
-	while (s->start) {
+	while (s - inode->sparse < inode->num_sparse) {
 		if (s->start <= lblock && s->start + s->num_blocks-1 >= lblock)
 			return 1;
 		if (s->start + s->num_blocks - 1 > lblock)

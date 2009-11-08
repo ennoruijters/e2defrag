@@ -272,6 +272,7 @@ struct allocation *get_blocks(struct defrag_ctx *c, e2_blkcnt_t num_blocks,
 		ret->extents[i].start_logical = first_logical;
 		ret->extents[i].end_block = extent->start_block - 1;
 		ret->extents[i].inode_nr = inode_nr;
+		ret->extents[i].uninit = 0;
 		extent_num_blocks = extent->end_block - extent->start_block + 1;
 		if (extent_num_blocks > num_blocks) {
 			ret->extents[i].end_block += num_blocks;
