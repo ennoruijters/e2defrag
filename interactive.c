@@ -171,7 +171,7 @@ int defrag_file_interactive(struct defrag_ctx *c)
 	if (!improve)
 		ret = do_one_inode(c, inode_nr);
 	else
-		ret = try_improve_inode(c, inode_nr);
+		while ((ret = try_improve_inode(c, inode_nr)) > 0);
 	if (ret < 0)
 		printf("Error: %s\n", strerror(errno));
 	printf("Inode now has %llu fragments\n",

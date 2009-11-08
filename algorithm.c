@@ -19,6 +19,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <errno.h>
+#include <unistd.h>
 #define obstack_chunk_alloc malloc
 #define obstack_chunk_free free
 #include "e2defrag.h"
@@ -230,56 +231,44 @@ int consolidate_free_space(struct defrag_ctx *c)
  * Try to improve the fragmentation status of the file by moving one single
  * extent to a position immediatly following the position of the extent
  * before it.
+ * Returns the un-allocated allocation struct representing the best improvement
+ * found.
  */
-int try_improve_inode(struct defrag_ctx *c, ext2_ino_t inode_nr)
+struct allocation *find_impoved_placement(struct defrag_ctx *c,
+                                          struct allocation *data)
 {
-	struct inode *inode = c->inodes[inode_nr];
-	struct allocation *data = inode->data;
-	int i, tmp, ret = 0;
+	struct allocation *ret;
+	int i;
 
 	if (!is_fragmented(c, data))
-		return 0;
-	for (i = 1; i < data->extent_count; i++) {
-		struct data_extent *cur_extent = &data->extents[i];
-		struct data_extent *prev_extent = &data->extents[i - 1];
+		return data;
+	ret = copy_allocation(data);
+	for (i = 1; i < ret->extent_count; i++) {
+		struct data_extent *cur_extent = &ret->extents[i];
+		struct data_extent *prev_extent = &ret->extents[i - 1];
 		struct free_extent *target;
 		target = containing_free_extent(c, prev_extent->end_block + 1);
 		if (target
 		    && target->end_block - target->start_block
 		       >= cur_extent->end_block - cur_extent->start_block)
 		{
-			struct allocation *target_alloc;
 			e2_blkcnt_t num_blocks;
 			num_blocks = cur_extent->end_block
 				             - cur_extent->start_block + 1;
-			target_alloc = get_range_allocation(
-				                     prev_extent->end_block + 1,
-				                     num_blocks,
-				                     cur_extent->start_logical);
-			if (!target_alloc)
-				return -1;
+			if (used_in_alloc(ret, target->start_block,
+			                  num_blocks))
+			{
+				continue;
+			}
 			if (global_settings.interactive) {
 				printf("Moving extent from %llu to %llu (%llu)\n",
 				       cur_extent->start_block,
-				       target_alloc->extents[0].start_block,
-				       cur_extent->end_block
-				               - cur_extent->start_block + 1);
+				       prev_extent->end_block + 1,
+				       num_blocks);
 			}
-			target_alloc->extents[0].inode_nr = inode_nr;
-			target_alloc->extents[0].uninit = cur_extent->uninit;
-			tmp = allocate(c, target_alloc);
-			if (tmp < 0) {
-				free(target_alloc);
-				return tmp;
-			}
-			tmp = move_data_extent(c, cur_extent, target_alloc);
-			if (tmp < 0) {
-				free(target_alloc);
-				return tmp;
-			}
-			data = inode->data;
+			alloc_move_extent(ret, cur_extent,
+			                  prev_extent->end_block + 1);
 			i--; /* To allow for merged extents */
-			ret++;
 		}
 	}
 	return ret;
@@ -346,6 +335,58 @@ int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr)
 			deallocate_blocks(c, target);
 		}
 	}
+	return ret;
+}
+
+/* Return values:
+ * 1	An improvement was made, further passes may improve it even further
+ * 0	No improvements made or inode is now perfect
+ * <0	Error
+ */ 
+int try_improve_inode(struct defrag_ctx *c, ext2_ino_t inode_nr)
+{
+	struct inode *inode = c->inodes[inode_nr];
+	struct allocation *new_placement, *old_placement, *diff;
+	int ret, i;
+	new_placement = find_impoved_placement(c, inode->data);
+	if (new_placement == inode->data)
+		return 0;
+	diff = alloc_subtract(new_placement, inode->data);
+	if (!diff)
+		goto out_readd;
+	ret = allocate(c, diff);
+	if (ret < 0)
+		goto out_free;
+	free(diff);
+	ret = copy_data(c, inode->data, &new_placement);
+	if (ret < 0)
+		goto out_free;
+	ret = fdatasync(c->fd);
+	if (ret)
+		goto out_free;
+	rb_remove_data_alloc(c, inode->data);
+	old_placement = inode->data;
+	inode->data = new_placement;
+	insert_data_alloc(c, inode->data);
+	for (i = 0; i < inode->data->extent_count; i++) {
+		ret = write_extent_metadata(c, &new_placement->extents[i]);
+		if (ret) {
+			inode->data = old_placement;
+			goto out_readd;
+		}
+	}
+	diff = alloc_subtract(old_placement, new_placement);
+	deallocate_blocks(c, diff);
+	free(old_placement);
+	if (inode->data->extent_count > 1)
+		return 1;
+	return 0;
+
+out_readd:
+	for (i = 0; i < inode->data->extent_count; i++)
+		insert_data_extent(c, &inode->data->extents[i]);
+out_free:
+	free(new_placement);
 	return ret;
 }
 

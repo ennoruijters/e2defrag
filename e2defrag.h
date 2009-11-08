@@ -137,6 +137,14 @@ int try_improve_inode(struct defrag_ctx *c, ext2_ino_t inode_nr);
 int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr);
 int do_whole_disk(struct defrag_ctx *c);
 
+/* allocation.c */
+struct allocation *copy_allocation(struct allocation *old);
+void alloc_move_extent(struct allocation *alloc, struct data_extent *extent,
+                       blk64_t new_start);
+int used_in_alloc(struct allocation *alloc, blk64_t start, e2_blkcnt_t size);
+struct allocation *alloc_subtract(struct allocation *from,
+                                  struct allocation *data);
+
 /* bitmap.c */
 void mark_blocks_unused(struct defrag_ctx *c, blk64_t first_block,
                         e2_blkcnt_t count);
