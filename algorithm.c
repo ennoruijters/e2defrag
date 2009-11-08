@@ -334,6 +334,8 @@ int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr)
 		}
 		ret = copy_data(c, inode->data, &target);
 		if (!ret) {
+			rb_remove_data_alloc(c, inode->data);
+			insert_data_alloc(c, target);
 			ret = deallocate_blocks(c, inode->data);
 			inode->data = target;
 			if (!ret)

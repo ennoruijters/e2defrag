@@ -488,8 +488,6 @@ int move_metadata_extent(struct defrag_ctx *c, struct data_extent *extent,
 		return -1;
 	}
 	target_block = target->extents[0].start_block;
-	rb_remove_data_extent(c, extent);
-	rb_remove_data_extent(c, &target->extents[0]);
 	for (i = extent->start_block; i != extent->end_block + 1; i++) {
 		ret = move_metadata_block(c, inode, i, target_block);
 		if (ret)
@@ -672,8 +670,12 @@ int write_extent_mapping(struct defrag_ctx *c, struct inode *inode)
 		goto error_out;
 	}
 	update_inode_block_count(c, inode, new_metadata_blocks);
-	if (inode->metadata)
+	if (inode->metadata) {
+		rb_remove_data_alloc(c, inode->metadata);
 		deallocate_blocks(c, inode->metadata);
+	}
+	if (new_metadata_blocks)
+		insert_data_alloc(c, new_metadata_blocks);
 	inode->metadata = new_metadata_blocks;
 	ret = 0;
 

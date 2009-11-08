@@ -38,6 +38,15 @@ static inline void rb_remove_data_extent(struct defrag_ctx *c,
 	rb_erase(&e->size_rb, &c->extents_by_size);
 }
 
+static inline void rb_remove_data_alloc(struct defrag_ctx *c,
+                                        struct allocation *alloc)
+{
+	int i;
+	for (i = 0; i < alloc->extent_count; i++)
+		rb_remove_data_extent(c, &alloc->extents[i]);
+}
+
+
 static inline void rb_remove_free_extent(struct defrag_ctx *c,
                                          struct free_extent *e)
 {
@@ -87,6 +96,14 @@ static inline void insert_data_extent(struct defrag_ctx *c,
 	}
 	rb_link_node(&e->size_rb, parent, p);
 	rb_insert_color(&e->size_rb, &c->extents_by_size);
+}
+
+static inline void insert_data_alloc(struct defrag_ctx *c,
+                                     struct allocation *alloc)
+{
+	int i;
+	for (i = 0; i < alloc->extent_count; i++)
+		insert_data_extent(c, &alloc->extents[i]);
 }
 
 static inline void insert_free_extent(struct defrag_ctx *c,

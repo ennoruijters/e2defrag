@@ -160,9 +160,6 @@ static struct allocation *split_extent(struct defrag_ctx *c,
 	size_t nbytes;
 	int extent_nr;
 
-	for (extent_nr = 0; extent_nr < alloc->extent_count; extent_nr++)
-		rb_remove_data_extent(c, &alloc->extents[extent_nr]);
-
 	extent_nr = extent - alloc->extents;
 	alloc->extent_count += 1;
 	nbytes = sizeof(struct allocation);
@@ -176,8 +173,6 @@ static struct allocation *split_extent(struct defrag_ctx *c,
 	alloc->extents[extent_nr + 1].start_block = new_end_block + 1;
 	alloc->extents[extent_nr + 1].start_logical = new_start_logical;
 	alloc->extents[extent_nr].end_block = new_end_block;
-	for (extent_nr = 0; extent_nr < alloc->extent_count; extent_nr++)
-		insert_data_extent(c, &alloc->extents[extent_nr]);
 	return alloc;
 }
 
@@ -214,7 +209,6 @@ int move_data_extent(struct defrag_ctx *c, struct data_extent *extent_to_copy,
 		ret = fdatasync(c->fd);
 	if (ret)
 		return ret;
-	rb_remove_data_extent(c, &target->extents[0]);
 	old_start = extent_to_copy->start_block;
 	rb_remove_data_extent(c, extent_to_copy);
 	*extent_to_copy = target->extents[0];
@@ -236,6 +230,9 @@ int move_data_extent(struct defrag_ctx *c, struct data_extent *extent_to_copy,
 	return ret;
 }
 
+/* Copy the given allocation to a new position on disk. Overlap between the
+ * origin and target is only allowed for blocks that are not moved at all.
+ */
 int copy_data(struct defrag_ctx *c, struct allocation *from,
               struct allocation **ret_target)
 {
@@ -288,7 +285,7 @@ int copy_data(struct defrag_ctx *c, struct allocation *from,
 		if (to_extent->end_block - cur_dest + 1 < num_blocks)
 			num_blocks = to_extent->end_block - cur_dest + 1;
 
-		if (!to_extent->uninit) {
+		if (!to_extent->uninit && cur_from != cur_dest) {
 			ret = __move_block_range(c, cur_from, cur_dest,
 			                                            num_blocks);
 			if (ret)

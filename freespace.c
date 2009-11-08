@@ -121,7 +121,6 @@ int deallocate_blocks(struct defrag_ctx *c, struct allocation *space)
 	for (i = 0; i < space->extent_count; i++) {
 		e2_blkcnt_t num_blocks = 1 + space->extents[i].end_block
 		                         - space->extents[i].start_block;
-		rb_remove_data_extent(c, &space->extents[i]);
 		if (ret >= 0)
 			ret = deallocate_space(c, space->extents[i].start_block,
 		                               num_blocks);
@@ -227,7 +226,6 @@ int allocate(struct defrag_ctx *c, struct allocation *space)
 		tmp = allocate_space(c, extent->start_block, num_blocks);
 		if (tmp < 0)
 			goto out_dealloc;
-		insert_data_extent(c, extent);
 	}
 	return 0;
 
@@ -237,7 +235,6 @@ out_dealloc:
 		extent = &space->extents[i];
 		num_blocks = extent->end_block - extent->start_block + 1;
 		deallocate_space(c, extent->start_block, num_blocks);
-		rb_remove_data_extent(c, extent);
 	}
 	return -1;
 }
