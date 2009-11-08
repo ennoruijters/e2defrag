@@ -78,7 +78,7 @@ first_word () {
 test_cmd () {
 	test_count=$(expr "$test_count" + 1)
 	first_word $2;
-	if [ $VALGRIND -eq 1 ] && [ "$FIRST" = "e2defrag" ]; then
+	if [ ! -z "$VALGRIND" ] && [ "$FIRST" = "e2defrag" ]; then
 		eval valgrind -q --error-exitcode=1 "$2"
 	else
 		eval "$2"
