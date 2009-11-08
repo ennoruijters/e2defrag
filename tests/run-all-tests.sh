@@ -15,6 +15,10 @@
 
 #!/bin/sh
 
+usage() {
+	echo "Usage: run-all-tests.sh [--valgrind]"
+}
+
 if [ -e "test-passes" ]; then
 	rm test-passes;
 fi
@@ -26,6 +30,21 @@ fi
 if [ -e "test-aborts" ]; then
 	rm test-aborts;
 fi
+
+if [ -d "test_trash" ]; then
+	rm -r test_trash
+fi
+
+while true; do
+	if [ -z "$1" ]; then
+		break;
+	fi
+	case "$1" in
+		-h|--help|-\?) usage; exit 0;;
+		--valgrind) export VALGRIND=1; shift;;
+		*) echo "Unknown parameter $1"; exit 0;;
+	esac
+done
 
 for i in t[0-9][0-9][0-9][0-9]-*.sh; do
 	sh $i;

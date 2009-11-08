@@ -71,9 +71,19 @@ test_end () {
 	fi
 }
 
+first_word () {
+	FIRST="$1";
+}
+
 test_cmd () {
 	test_count=$(expr "$test_count" + 1)
-	eval "$2"
+	first_word $2;
+	if [ $VALGRIND -eq 1 ] && [ "$FIRST" = "e2defrag" ]; then
+		eval valgrind -q --error-exitcode=1 "$2"
+	else
+		eval "$2"
+	fi
+
 	if [ "$?" = 0 ]; then
 		echo "	pass $test_count: $1"
 		true
