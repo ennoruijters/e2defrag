@@ -238,7 +238,7 @@ struct allocation *find_impoved_placement(struct defrag_ctx *c,
                                           struct allocation *data)
 {
 	struct allocation *ret;
-	int i;
+	int i, is_changed = 0;
 
 	if (!is_fragmented(c, data))
 		return data;
@@ -266,12 +266,18 @@ struct allocation *find_impoved_placement(struct defrag_ctx *c,
 				       prev_extent->end_block + 1,
 				       num_blocks);
 			}
+			is_changed = 1;
 			alloc_move_extent(ret, cur_extent,
 			                  prev_extent->end_block + 1);
 			i--; /* To allow for merged extents */
 		}
 	}
-	return ret;
+	if (is_changed) {
+		return ret;
+	} else {
+		free(ret);
+		return data;
+	}
 }
 
 /* Very naive algorithm for now: Just try to find a combination of free
