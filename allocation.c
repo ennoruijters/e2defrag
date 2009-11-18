@@ -157,3 +157,36 @@ struct allocation *alloc_subtract(struct allocation *from,
 	}
 	return ret;
 }
+
+/* This function splits and extent in two. The first extent will contain the
+ * blocks from the start of the given extent up to new_end_block. The second
+ * extent will contain the blocks from new_end_block+1 up to the end of the
+ * given extent. The relative locations of the new extents in the allocation
+ * will be that of the old extent.
+ * The extents in the old allocation will be removed from the trees, realloced
+ * and the new extents placed in the trees.
+ */
+struct allocation *split_extent(struct allocation *alloc,
+                                struct data_extent *extent,
+                                blk64_t new_end_block,
+                                blk64_t new_start_logical)
+{
+	size_t nbytes;
+	int extent_nr;
+
+	extent_nr = extent - alloc->extents;
+	alloc->extent_count += 1;
+	nbytes = sizeof(struct allocation);
+	nbytes += alloc->extent_count * sizeof(struct data_extent);
+	alloc = realloc(alloc, nbytes);
+	if (!alloc)
+		return NULL;
+	memmove(&alloc->extents[extent_nr + 1], &alloc->extents[extent_nr],
+	                               (alloc->extent_count - extent_nr - 1)
+	                               * sizeof(struct data_extent));
+	alloc->extents[extent_nr + 1].start_block = new_end_block + 1;
+	alloc->extents[extent_nr + 1].start_logical = new_start_logical;
+	alloc->extents[extent_nr].end_block = new_end_block;
+	return alloc;
+}
+

@@ -143,39 +143,6 @@ static int __move_block_range(struct defrag_ctx *c, blk64_t from, blk64_t to,
 }
 #endif /* NOSPLICE */
 
-/* This function splits and extent in two. The first extent will contain the
- * blocks from the start of the given extent up to new_end_block. The second
- * extent will contain the blocks from new_end_block+1 up to the end of the
- * given extent. The relative locations of the new extents in the allocation
- * will be that of the old extent.
- * The extents in the old allocation will be removed from the trees, realloced
- * and the new extents placed in the trees.
- */
-static struct allocation *split_extent(struct defrag_ctx *c,
-                                       struct allocation *alloc,
-                                       struct data_extent *extent,
-                                       blk64_t new_end_block,
-                                       blk64_t new_start_logical)
-{
-	size_t nbytes;
-	int extent_nr;
-
-	extent_nr = extent - alloc->extents;
-	alloc->extent_count += 1;
-	nbytes = sizeof(struct allocation);
-	nbytes += alloc->extent_count * sizeof(struct data_extent);
-	alloc = realloc(alloc, nbytes);
-	if (!alloc)
-		return NULL;
-	memmove(&alloc->extents[extent_nr + 1], &alloc->extents[extent_nr],
-	                               (alloc->extent_count - extent_nr - 1)
-	                               * sizeof(struct data_extent));
-	alloc->extents[extent_nr + 1].start_block = new_end_block + 1;
-	alloc->extents[extent_nr + 1].start_logical = new_start_logical;
-	alloc->extents[extent_nr].end_block = new_end_block;
-	return alloc;
-}
-
 /* Target must have exactly one extent (for now) and exactly as many blocks
    as the source extent. Target is no longer valid afterwards and must be
    cleaned up by the caller. */
@@ -231,7 +198,8 @@ int move_data_extent(struct defrag_ctx *c, struct data_extent *extent_to_copy,
 }
 
 /* Copy the given allocation to a new position on disk. Overlap between the
- * origin and target is only allowed for blocks that are not moved at all.
+ * origin and target is allowed only for regions that are not moved at all.
+ * This method may realloc *ret_target should an extent need to be split.
  */
 int copy_data(struct defrag_ctx *c, struct allocation *from,
               struct allocation **ret_target)
@@ -271,7 +239,7 @@ int copy_data(struct defrag_ctx *c, struct allocation *from,
 			blk64_t new_start_logical;
 			int extent_nr = to_extent - target->extents;
 			new_start_logical = get_logical_block(inode, cur_from);
-			new_target = split_extent(c, target, to_extent,
+			new_target = split_extent(target, to_extent,
 			                          cur_dest - 1,
 						  new_start_logical);
 			if (!new_target)
