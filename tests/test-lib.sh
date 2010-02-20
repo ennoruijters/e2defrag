@@ -76,6 +76,8 @@ first_word () {
 }
 
 test_cmd () {
+	LC_ALL=C
+	export LC_ALL
 	test_count=$(expr "$test_count" + 1)
 	first_word $2;
 	if [ ! -z "$VALGRIND" ] && [ "$FIRST" = "e2defrag" ]; then
@@ -95,6 +97,8 @@ test_cmd () {
 }
 
 test_and_continue () {
+	LC_ALL=C
+	export LC_ALL
 	if [ "$#" -ne 2 ]; then
 		echo "bug in test script: not 2 parameters to test_and_continue"
 		test_end
@@ -104,6 +108,8 @@ test_and_continue () {
 }
 
 test_and_stop_on_error () {
+	LC_ALL=C
+	export LC_ALL
 	if [ "$#" -ne 2 ]; then
 		echo "bug in test script: not 2 parameters to test_and_continue"
 		test_end
@@ -118,6 +124,8 @@ test_and_stop_on_error () {
 }
 
 infra_cmd () {
+	LC_ALL=C
+	export LC_ALL
 	eval 1>/dev/null 2>/dev/null "$1"
 	if [ "$?" -ne "0" ]; then
 		echo "error executing command:"
