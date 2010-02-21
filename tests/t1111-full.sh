@@ -29,7 +29,7 @@ infra_cmd "echo \"dump_inode <12> before\nquit\n\" | debugfs full.img \
            > /dev/null"
 
 test_and_stop_on_error "defragmenting full ext2 disk with fragmented file" \
-                       "echo "i12\n0" | e2defrag -i full.img > /dev/null"
+                       "echo \"i12\n0\" | e2defrag -i full.img > /dev/null"
 
 test_and_continue "resulting image should not have file system errors" \
                   "e2fsck -f -y full.img 2>/dev/null > fsckout"
