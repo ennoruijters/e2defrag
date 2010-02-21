@@ -15,10 +15,10 @@
 
 SOURCES =  e2defrag.c io.c inode.c rbtree.c bmove.c bitmap.c debug.c
 SOURCES += interactive.c freespace.c metadata_write.c metadata_read.c
-SOURCES += algorithm.c crc16.c allocation.c
+SOURCES += algorithm.c crc16.c allocation.c journal.c
 OBJECTS =  e2defrag.o io.o inode.o rbtree.o bmove.o bitmap.o debug.o
 OBJECTS += interactive.o freespace.o metadata_write.o metadata_read.o
-OBJECTS += algorithm.o crc16.o allocation.o
+OBJECTS += algorithm.o crc16.o allocation.o journal.o
 HEADERS = e2defrag.h rbtree.h extree.h crc16.h Makefile
 CFLAGS += -ggdb -Wall -pedantic -std=gnu99 -DNOSPLICE
 
@@ -26,9 +26,13 @@ ifndef ECHO
 ECHO = @echo
 endif
 
-.PHONY: clean all
+.PHONY: clean all highperf
 
 all: e2defrag
+
+highperf: $(HEADERS) $(SOURCES)
+	$(ECHO) -e \\tCC\\t$(SOURCES)
+	@$(CC) $(CFLAGS) $(TARGET_ARCH) $(OUTPUT_OPTION) -o e2defrag $(SOURCES)
 
 e2defrag: $(OBJECTS)
 	$(ECHO) "	LN	e2defrag"

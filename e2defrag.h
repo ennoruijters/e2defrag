@@ -108,6 +108,16 @@ struct inode {
 	int num_sparse;
 };
 
+struct disk_journal {
+	void *map;
+	void *head; /* Start of the first unflushed transaction */
+	void *tail; /* One past the end of the last (or current) transaction */
+	struct allocation *journal_alloc; /* NULL if map is a proper mmap */
+	off_t map_offset;
+	size_t size;
+	int blocksize;
+};
+
 struct defrag_ctx {
 	struct ext2_super_block sb;
 	struct rb_root extents_by_block;
@@ -123,6 +133,7 @@ struct defrag_ctx {
 		off_t bitmap_offset;
 	} *bg_maps;
 	char *gd_map;
+	struct disk_journal *journal;
 	size_t map_length;
 	int nr_inode_maps;
 	int fd;
@@ -193,6 +204,10 @@ int write_block(struct defrag_ctx *c, void *buf, blk64_t block);
 int set_e2_filesystem_data(struct defrag_ctx *c);
 void close_drive(struct defrag_ctx *c);
 
+/* journal.c */
+int unmap_journal(struct defrag_ctx *disk);
+int journal_init(struct defrag_ctx *disk);
+
 /* metadata_write.c */
 int write_extent_metadata(struct defrag_ctx *c, struct data_extent *e);
 int move_metadata_extent(struct defrag_ctx *c, struct data_extent *extent,
@@ -202,5 +217,6 @@ int write_inode_metadata(struct defrag_ctx *c, struct inode *inode);
 /* metadata_read.c */
 long parse_inode(struct defrag_ctx *c, ext2_ino_t inode_nr,
                  struct ext2_inode *inode);
+struct inode *read_inode(struct defrag_ctx *c, ext2_ino_t ino);
 
 #endif

@@ -118,6 +118,9 @@ int main(int argc, char *argv[])
 		printf("Error reading filesystem: %s\n", strerror(errno));
 		return errno;
 	}
+	ret = journal_init(disk);
+	if (ret < 0)
+		return EXIT_FAILURE;
 #ifndef NDEBUG
 	dump_trees(disk, 3);
 #endif

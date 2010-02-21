@@ -269,6 +269,7 @@ void close_drive(struct defrag_ctx *c)
 		rb_erase(c->free_tree_by_size.rb_node, &c->free_tree_by_size);
 		free(f);
 	}
+	unmap_journal(c);
 	close(c->fd);
 	free(c);
 }
