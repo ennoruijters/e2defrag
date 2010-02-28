@@ -19,6 +19,7 @@
 #define _LINUX_JBD2_H
 
 #include <linux/types.h>
+#include <stddef.h>
 typedef unsigned int tid_t;
 
 #define JBD2_MIN_JOURNAL_BLOCKS 1024

@@ -110,12 +110,14 @@ struct inode {
 
 struct disk_journal {
 	void *map;
-	void *head; /* Start of the first unflushed transaction */
-	void *tail; /* One past the end of the last (or current) transaction */
+	char *head; /* Start of the first unflushed transaction */
+	char *tail; /* One past the end of the last (or current) transaction */
 	struct allocation *journal_alloc; /* NULL if map is a proper mmap */
 	off_t map_offset;
 	size_t size;
 	int blocksize;
+	int max_trans_blocks; /* Maximum number of data blocks per trans. */
+	unsigned char tag_size;
 };
 
 struct defrag_ctx {

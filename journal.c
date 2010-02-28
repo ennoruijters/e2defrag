@@ -291,13 +291,49 @@ out_free_inode:
 
 static int journal_init_v1(struct defrag_ctx *disk)
 {
-	printf("Journal type 1\n");
+	struct journal_superblock_s *sb = disk->journal->map;
+	disk->journal->tag_size = JBD2_TAG_SIZE32;
+	if (be32toh(sb->s_start != 0)) {
+		fprintf(stderr, "Journal is not clean, run e2fsck\n");
+		errno = EBUSY;
+		return -1;
+	}
+	disk->journal->head = disk->journal->map;
+	disk->journal->head += disk->journal->blocksize;
+	disk->journal->tail = disk->journal->head;
+
+	disk->journal->max_trans_blocks = be32toh(sb->s_maxlen) / 4;
 	return 0;
 }
 
 static int journal_init_v2(struct defrag_ctx *disk)
 {
-	printf("Journal type 2\n");
+	int tags_per_block, max_trans_data;
+	struct journal_superblock_s *sb = disk->journal->map;
+	if (sb->s_feature_incompat & htobe32(JBD2_FEATURE_INCOMPAT_64BIT))
+		disk->journal->tag_size = JBD2_TAG_SIZE64;
+	else
+		disk->journal->tag_size = JBD2_TAG_SIZE32;
+	if (be32toh(sb->s_start != 0)) {
+		fprintf(stderr, "Journal is not clean, run e2fsck\n");
+		errno = EBUSY;
+		return -1;
+	}
+	disk->journal->head = disk->journal->map;
+	disk->journal->head += disk->journal->blocksize;
+	disk->journal->tail = disk->journal->head;
+
+	tags_per_block = disk->journal->blocksize - sizeof(journal_header_t);
+	tags_per_block /= sizeof(journal_block_tag_t);
+
+	max_trans_data = sb->s_max_transaction - 1; /* -1 for commit block */
+	max_trans_data -= (max_trans_data + tags_per_block - 1)/ tags_per_block;
+
+	if (max_trans_data > be32toh(sb->s_max_trans_data))
+		disk->journal->max_trans_blocks = be32toh(sb->s_max_trans_data);
+	else
+		disk->journal->max_trans_blocks = max_trans_data;
+
 	return 0;
 }
 
@@ -337,6 +373,7 @@ int journal_init(struct defrag_ctx *disk)
 			errno = EIO;
 			return -1;
 		}
+		disk->journal->blocksize = be32toh(sb->s_blocksize);
 		switch(be32toh(sb->s_header.h_blocktype)) {
 		case JBD2_SUPERBLOCK_V1:
 			return journal_init_v1(disk);
