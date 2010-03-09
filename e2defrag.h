@@ -126,18 +126,10 @@ struct defrag_ctx {
 	struct rb_root extents_by_size;
 	struct rb_root free_tree_by_block;
 	struct rb_root free_tree_by_size;
-	struct {
-		void *map_start;
-		unsigned char *bitmap;
-		struct ext4_group_desc *gd;
-		size_t inode_map_length;
-		size_t bitmap_map_length;
-		off_t bitmap_offset;
-	} *bg_maps;
+	unsigned char *bitmap;
+	void *inode_map_start;
 	char *gd_map;
 	struct disk_journal *journal;
-	size_t map_length;
-	int nr_inode_maps;
 	int fd;
 	struct inode *inodes[];
 };
@@ -202,7 +194,10 @@ int defrag_file_interactive(struct defrag_ctx *c);
 /* io.c */
 struct defrag_ctx *open_drive(char *filename);
 int read_block(struct defrag_ctx *c, void *buf, blk64_t block);
+int write_inode(struct defrag_ctx *c, ext2_ino_t inode_nr);
 int write_block(struct defrag_ctx *c, void *buf, blk64_t block);
+int write_bitmap_block(struct defrag_ctx *c, __u32 group_nr);
+int write_gd(struct defrag_ctx *c, __u32 group_nr);
 int set_e2_filesystem_data(struct defrag_ctx *c);
 void close_drive(struct defrag_ctx *c);
 

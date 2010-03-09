@@ -279,6 +279,8 @@ static struct inode *make_inode_extents(struct defrag_ctx *c,
 			free(ret);
 			return NULL;
 		}
+	} else {
+		ret->sparse = NULL;
 	}
 	ret->data->block_count = 0;
 	ret->data->extent_count = i;
@@ -680,9 +682,8 @@ struct inode *read_inode(struct defrag_ctx *c, ext2_ino_t ino)
 	long group_nr;
 	ino -= 1; /* Inodes are indexed from 1 */
 	group_nr = ino / EXT2_INODES_PER_GROUP(&c->sb);
-	inode_start = c->bg_maps[group_nr].map_start;
-	inode_start += (ino % EXT2_INODES_PER_GROUP(&c->sb))
-	               * EXT2_INODE_SIZE(&c->sb);
+	inode_start = c->inode_map_start;
+	inode_start += ino * EXT2_INODE_SIZE(&c->sb);
 	inode = (struct ext2_inode *)inode_start;
 	if (inode->i_flags - (inode->i_flags & KNOWN_INODE_FLAGS_MASK)) {
 		printf("Inode %u has unknown flags %x\n",

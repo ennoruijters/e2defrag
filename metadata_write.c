@@ -326,8 +326,7 @@ static int write_direct_mapping(struct defrag_ctx *c, struct data_extent *e)
 
 out:
 	if (sync_inode)
-		/* Assumes the inode is completely within one page */
-		return msync(PAGE_START(inode->on_disk),getpagesize(), MS_SYNC);
+		return write_inode(c, e->inode_nr);
 	return 0;
 }
 
@@ -438,7 +437,10 @@ out_update:
 	if (at_block) {
 		ret = write_block(c, header, at_block);
 	} else {
-		ret = msync(PAGE_START(header), getpagesize(), MS_SYNC);
+		ext2_ino_t inode_nr;
+		/* I think it's safe to assume this inode has data */
+		inode_nr = inode->data->extents[0].inode_nr;
+		ret = write_inode(c, inode_nr);
 	}
 out_noupdate:
 	if (at_block)
@@ -578,8 +580,9 @@ static int writeout_extents(struct defrag_ctx *c, struct ext3_extent *leaves,
 	}
 }
 
-int update_inode_extents(struct inode *inode, struct ext3_extent *entries,
-                         e2_blkcnt_t num_entries, int depth)
+static void update_inode_extents(struct inode *inode,
+                                 struct ext3_extent *entries,
+                                 e2_blkcnt_t num_entries, int depth)
 {
 	assert(num_entries <= 4);
 	inode->on_disk->extents.hdr.eh_magic = EXT3_EXT_MAGIC;
@@ -589,12 +592,10 @@ int update_inode_extents(struct inode *inode, struct ext3_extent *entries,
 	inode->on_disk->extents.hdr.eh_generation = 0;
 	memcpy(inode->on_disk->extents.extent, entries,
 	       num_entries * sizeof(struct ext3_extent));
-
-	return msync(PAGE_START(inode->on_disk), getpagesize(), MS_SYNC);
 }
 
-void update_inode_block_count(struct defrag_ctx *c, struct inode *inode,
-                              struct allocation *new)
+int update_inode_block_count(struct defrag_ctx *c, struct inode *inode,
+                             struct allocation *new)
 {
 	e2_blkcnt_t old_num_blocks, new_num_blocks;
 	ext2_ino_t inode_nr;
@@ -602,21 +603,20 @@ void update_inode_block_count(struct defrag_ctx *c, struct inode *inode,
 	char *map;
 	struct ext2_inode *on_disk;
 	if (inode->metadata->block_count == new->block_count)
-		return;
+		return 0;
 	assert(inode->data->extent_count); /* Otherwise why would we be writing
 	                                      metadata? */
 	inode_nr = inode->data->extents[0].inode_nr - 1;
 	group_nr = inode_nr / EXT2_INODES_PER_GROUP(&c->sb);
-	map = c->bg_maps[group_nr].map_start;
-	map += (inode_nr % EXT2_INODES_PER_GROUP(&c->sb)) * EXT2_INODE_SIZE(&c->sb);
+	map = c->inode_map_start;
+	map += inode_nr * EXT2_INODE_SIZE(&c->sb);
 	on_disk = (struct ext2_inode *)map;
 	old_num_blocks = inode->metadata->block_count;
 	old_num_blocks *= EXT2_BLOCK_SIZE(&c->sb) / 512;
 	new_num_blocks = new->block_count * EXT2_BLOCK_SIZE(&c->sb) / 512;
 	on_disk->i_blocks -= old_num_blocks;
 	on_disk->i_blocks += new_num_blocks;
-	/* No sync because the i_blocks field is not very important anyway */
-	return;
+	return write_inode(c, inode->data->extents[0].inode_nr);
 }
 
 int write_extent_mapping(struct defrag_ctx *c, struct inode *inode)
@@ -663,13 +663,15 @@ int write_extent_mapping(struct defrag_ctx *c, struct inode *inode)
 		new_metadata_blocks->extent_count = 0;
 	}
 	fdatasync(c->fd);
-	ret = update_inode_extents(inode, leaves, num_extents, depth);
+	update_inode_extents(inode, leaves, num_extents, depth);
+	ret = write_inode(c, inode->data->extents[0].inode_nr);
 	if (ret < 0) {
 		if (new_metadata_blocks)
 			deallocate_blocks(c, new_metadata_blocks);
 		goto error_out;
 	}
-	update_inode_block_count(c, inode, new_metadata_blocks);
+	if (update_inode_block_count(c, inode, new_metadata_blocks) < 0)
+		goto error_out;
 	if (inode->metadata) {
 		rb_remove_data_alloc(c, inode->metadata);
 		deallocate_blocks(c, inode->metadata);
