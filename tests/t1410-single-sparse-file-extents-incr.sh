@@ -21,7 +21,10 @@
 
 . ./test-lib.sh
 
-test_begin "t1410-single-sparse-file-extents-incremental"
+if [ "$1" != "do_test" ]; then
+	test_begin "t1410-single-sparse-file-extents-incremental" "$0"
+	exit $?;
+fi
 
 load_image single-sparse-file-ext4
 

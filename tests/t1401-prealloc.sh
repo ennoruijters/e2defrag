@@ -21,7 +21,10 @@
 
 . ./test-lib.sh
 
-test_begin "t1401-prealloc"
+if [ "$1" != "do_test" ]; then
+	test_begin "t1401-prealloc" "$0"
+	exit $?;
+fi
 
 load_image prealloc
 

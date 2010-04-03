@@ -20,7 +20,10 @@
 
 . ./test-lib.sh
 
-test_begin "t1402-prealloc-nofrag"
+if [ "$1" != "do_test" ]; then
+	test_begin "t1402-prealloc-nofrag" "$0"
+	exit $?;
+fi
 
 load_image prealloc-nofrag
 

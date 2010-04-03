@@ -20,7 +20,10 @@
 
 . ./test-lib.sh
 
-test_begin "t1110-single-file-incremental"
+if [ "$1" != "do_test" ]; then
+	test_begin "t1110-single-file-incremental" "$0"
+	exit $?
+else
 
 load_image single-file
 
@@ -43,3 +46,4 @@ test_and_continue "file in image should be unchanged" \
                    > /dev/null 2>/dev/null && cmp before after"
 
 test_end
+fi #do_test

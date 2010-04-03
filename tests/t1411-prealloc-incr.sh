@@ -21,7 +21,10 @@
 
 . ./test-lib.sh
 
-test_begin "t1411-prealloc-incremental"
+if [ "$1" != "do_test" ]; then
+	test_begin "t1411-prealloc-incremental" "$0"
+	exit $?;
+fi
 
 load_image prealloc
 

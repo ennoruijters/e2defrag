@@ -21,7 +21,10 @@
 
 . ./test-lib.sh
 
-test_begin "t1101-almost-full"
+if [ "$1" != "do_test" ]; then
+	test_begin "t1101-almost-full" "$0"
+	exit $?
+else
 
 load_image almost-full
 
@@ -48,3 +51,4 @@ test_and_continue "files in image should be unchanged" \
                   "cmp before1 after1 && cmp before2 after2"
 
 test_end
+fi #do_test

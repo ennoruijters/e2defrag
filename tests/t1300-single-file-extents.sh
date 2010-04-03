@@ -20,7 +20,10 @@
 
 . ./test-lib.sh
 
-test_begin "t1300-single-file-extents"
+if [ "$1" != "do_test" ]; then
+	test_begin "t1300-single-file-extents" "$0"
+	exit $?;
+fi
 
 load_image single-file-ext4
 

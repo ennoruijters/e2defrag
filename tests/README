@@ -51,23 +51,28 @@ Writing tests
 -------------
 
 Every test script is a shell script. It should start with the normal
-'#!/bin/sh'. After this, the script should include the test-lib.sh
+'#!/bin/sh'. After this, the script should include and run the test-lib.sh
 library like this:
 
 	. ./test-lib.sh
+	if [ "$1" != "do_test" ]; then
+		test_begin <test_name> "$0"
+		exit $?
+	fi
 
 This library does the following things:
 
  - Creates an empty directory 'test_trash' and chdir into it. This
-   directory will be deleted when the test ends.
+   directory will be deleted when the test ends. This is where the special
+   parameter do_test comes from. When inside the temporary directory
+   begin_test calls the test again with this parameter.
 
  - Defines some standard helper functions most tests use, like
    loading image files and running commands with automatic pass/fail
    output.
 
 All test scripts should end with test_end so the final test/fail line
-is output, the test_trash directory is deleted and the exit status
-is set appropriatly.
+is output and the exit status is set appropriatly.
 
 
 Naming tests
@@ -117,11 +122,12 @@ Test library (test-lib.sh)
 There are some useful functions defined in test-lib.sh you can use.
 These are:
 
- - test_begin <test-name>
+ - test_begin <test-name> <test-filename>
 
-   You really should start every script with this. Right now it
-   only displays the name, it might do some bookkeeping in the
-   future.
+   You really should start every script with this. It creates a
+   temporary directory, chdirs into it and calls <test-filename> with
+   the argument "do_test". It also sets a trap to delete the temporary
+   directory after exitting. Finally, it displays the test name.
 
  - load_image <image-name>
 
@@ -131,11 +137,17 @@ These are:
    function also automatically decompresses it to become a .img
    file.
 
+ - load_data <filename>
+
+   Load the names file into the current direcory. You should include
+   the full filename (with extension) and path (inside the tests directory)
+   if applicable.
+
  - test_end
 
-   End every test with this, as it deletes the temporary directory,
-   outputs the final pass/FAIL message and sets the output status
-   correctly (note that your script will exit when calling this).
+   End every test with this, as outputs the final pass/FAIL message and sets
+   the output status correctly (note that your script will exit when calling
+   this).
 
  - test_and_continue <message> <command>
 

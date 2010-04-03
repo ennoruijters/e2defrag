@@ -23,13 +23,33 @@ test_count=0
 test_failed=""
 infra_failed=0
 
+tests_path=""
+
 test_begin () {
-	if [ "$#" -ne 1 ]; then
-		echo "bug in test script: not 1 parameter to test_begin"
+	if [ "$#" -ne 2 ]; then
+		echo "bug in test script: not 2 parameters to test_begin"
 		exit 1;
 	fi
 	test_name="$1"
 	echo "$test_name:"
+	tests_path=$(pwd);
+	PATH=$(pwd)/..:$PATH
+
+	TRASH_DIR=""
+	trap "on_exit" EXIT
+	trap "on_exit" HUP
+	trap "on_exit" TERM
+	trap "on_exit" QUIT
+	make_tmpdir;
+	cp test-lib.sh "$TRASH_DIR"
+	( export test_name && cd "$TRASH_DIR" && sh "../$2" do_test )
+	RET=$?;
+	case $RET in
+		0) echo "$test_name" >> test-passes ;;
+		1) echo "$test_name: $test_count" >> test-failures ;;
+		2) echo "test_name: $test_count" >> test-aborts ;;
+	esac
+	exit $?;
 }
 
 load_image () {
@@ -53,19 +73,14 @@ load_image () {
 }
 
 test_end () {
-	cd "$tests_path"
-	rm -r test_trash
 	if [ "$infra_failed" != 0 ]; then
-		echo "test_name: $test_count" >> test-aborts
 		echo "Could not test: $test_name"
 		exit 2
 	fi
 	if [ "$test_failed" != "" ]; then
-		echo "$test_name: $test_count" >> test-failures
 		echo "FAIL: $test_name\n"
 		exit 1
 	else
-		echo "$test_name" >> test-passes
 		echo "pass: $test_name\n"
 		exit 0
 	fi
@@ -136,7 +151,35 @@ infra_cmd () {
 	fi
 }
 
-PATH=$(pwd)/..:$PATH
-tests_path=$(pwd)
-mkdir test_trash
-cd test_trash
+make_tmpdir () {
+	local TMP_PREFIX="test_trash_"
+	local TMP_SUFFIX=0
+	local TMP_MAX=10000
+	TRASH_DIR="$TMP_PREFIX$TMP_SUFFIX"
+	local TMPDIR_GOOD=0
+
+	while [ $TMPDIR_GOOD -eq 0 ] && [ $TMP_SUFFIX -le $TMP_MAX ]; do
+		if (umask 077 && mkdir $TRASH_DIR 2> /dev/null); then
+			TMPDIR_GOOD=1;
+		else
+			TMP_SUFFIX=$(($TMP_SUFFIX+1));
+			TRASH_DIR="$TMP_PREFIX$TMP_SUFFIX";
+		fi;
+	done;
+
+	if [ $TMPDIR_GOOD -eq 0 ]; then
+		echo "Could not make temporary directory"
+		exit 1
+	fi;
+	if [ ! -d $TRASH_DIR ]; then
+		echo "Something has gone very wrong: My temporary directory has disappeared"
+		exit 1;
+	fi;
+	return 0
+}
+
+on_exit () {
+	if [ $TRASH_DIR != "" ]; then
+		rm -rf $TRASH_DIR;
+	fi
+}

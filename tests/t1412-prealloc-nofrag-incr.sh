@@ -21,7 +21,10 @@
 
 . ./test-lib.sh
 
-test_begin "t1412-prealloc-nofrag-incremental"
+if [ "$1" != "do_test" ]; then
+	test_begin "t1412-prealloc-nofrag-incremental" "$0"
+	exit $?;
+fi
 
 load_image prealloc-nofrag
 

@@ -20,7 +20,10 @@
 
 . ./test-lib.sh
 
-test_begin "t1301-single-3-extent-file"
+if [ "$1" != "do_test" ]; then
+	test_begin "t1301-single-3-extent-file" "$0"
+	exit $?;
+fi
 
 load_image single-3ext-file
 

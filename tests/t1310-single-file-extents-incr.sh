@@ -20,7 +20,10 @@
 
 . ./test-lib.sh
 
-test_begin "t1310-single-file-extents-incremental"
+if [ "$1" != "do_test" ]; then
+	test_begin "t1310-single-file-extents-incremental" "$0"
+	exit $?;
+fi
 
 load_image single-file-ext4
 

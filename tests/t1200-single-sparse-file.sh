@@ -20,7 +20,10 @@
 
 . ./test-lib.sh
 
-test_begin t1200-single-sparse-file
+if [ "$1" != "do_test" ]; then
+	test_begin t1200-single-sparse-file "$0"
+	exit $?;
+fi
 
 load_image single-sparse-file
 
