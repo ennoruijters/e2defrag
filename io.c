@@ -150,6 +150,24 @@ struct defrag_ctx *open_drive(char *filename)
 	tmp = read(fd, &sb, SUPERBLOCK_SIZE);
 	if (tmp < SUPERBLOCK_SIZE)
 		goto error_open;
+	if (sb.s_state != EXT2_VALID_FS) {
+		fprintf(stderr, "Filesystem not cleanly umounted,");
+		if (global_settings.simulate) {
+			fprintf(stderr, " continuing anyway\n");
+		} else {
+			fprintf(stderr, " aborting\n");
+			errno = EIO;
+			close(fd);
+			return NULL;
+		}
+	}
+	sb.s_state &= ~EXT2_VALID_FS;
+	tmp = lseek(fd, SUPERBLOCK_OFFSET, SEEK_SET);
+	if (tmp < 0)
+		goto error_open;
+	tmp = write(fd, &sb, SUPERBLOCK_SIZE);
+	if (tmp < SUPERBLOCK_SIZE)
+		goto error_open;
 
 	ret = calloc(sizeof(struct defrag_ctx)
 	             + sizeof(struct inode *) * sb.s_inodes_count, 1);
@@ -238,6 +256,11 @@ long parse_inode_table(struct defrag_ctx *c, blk64_t bitmap_block,
 void close_drive(struct defrag_ctx *c)
 {
 	int i;
+	c->sb.s_state |= EXT2_VALID_FS;
+	if (lseek(c->fd, SUPERBLOCK_OFFSET, SEEK_SET) >= 0) {
+		write(c->fd, &c->sb, SUPERBLOCK_SIZE);
+		fsync(c->fd);
+	}
 	free(c->inode_map_start);
 	free(c->bitmap);
 	free(c->gd_map);
