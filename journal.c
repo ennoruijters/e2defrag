@@ -19,372 +19,433 @@
 
 #define _XOPEN_SOURCE 600
 #define _BSD_SOURCE
-#include <sys/mman.h>
 #include <errno.h>
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <endian.h>
+#include <assert.h>
 #include "e2defrag.h"
 #include "jbd2.h"
 
-int unmap_journal(struct defrag_ctx *disk)
+struct journal_trans no_journal_trans = {
+	.ctx = NULL,
+	.transaction_state = TRANS_ACTIVE
+};
+
+/* Returns a new, active transaction placed at the end of the superblock's
+ * transaction list.
+ */
+journal_trans_t *start_transaction(struct defrag_ctx *c)
 {
-	char *base;
-	size_t length;
-	int ret_errno = 0, tmp;
-	if (!disk->journal || !disk->journal->map)
+	struct journal_trans *ret;
+	if (!c->journal) {
+		if (no_journal_trans.ctx == NULL)
+			no_journal_trans.ctx = c;
+		assert(no_journal_trans.ctx == c);
+		return &no_journal_trans;
+	}
+	ret = malloc(sizeof(struct journal_trans));
+	if (!ret) {
+		fprintf(stderr, "Out of memory allocating transaction\n");
+		return NULL;
+	}
+	ret->writeout_blocks = NULL;
+	ret->protected_extents = NULL;
+	ret->transaction_state = TRANS_ACTIVE;
+	ret->ctx = c;
+	ret->start_block = 0;
+	ret->next = NULL;
+	if (c->journal->last_transaction)
+		c->journal->last_transaction->next = ret;
+	c->journal->last_transaction = ret;
+	if (!c->journal->transactions)
+		c->journal->transactions = ret;
+	return ret;
+}
+
+/* Mark the given transaction as closed (i.e. no new blocks can be added) */
+void finish_transaction(journal_trans_t *trans)
+{
+	trans->transaction_state = TRANS_CLOSED;
+}
+
+/* Free the finished transaction */
+void free_transaction(journal_trans_t *trans)
+{
+	while (trans->writeout_blocks) {
+		void *tmp = trans->writeout_blocks;
+		trans->writeout_blocks = trans->writeout_blocks->next;
+		free(tmp);
+	}
+	assert(!trans->protected_extents);
+	free(trans);
+}
+
+/* Add to the transaction, a write command for the indicated block with the
+ * givan data. The data is copied into the transaction (so can safely be
+ * mutated by the caller afterwards). The transaction must be ACTIVE.
+ */
+int journal_write_block(journal_trans_t *trans, blk64_t block_nr, void *buffer)
+{
+	struct writeout_block *wo_block;
+	size_t block_size;
+	assert(trans->transaction_state == TRANS_ACTIVE);
+	if (trans == &no_journal_trans)
+		return write_block(trans->ctx, buffer, block_nr);
+	block_size = EXT2_BLOCK_SIZE(&trans->ctx->sb);
+	wo_block = trans->writeout_blocks;
+
+	while (wo_block) {
+		if (wo_block->block_nr == block_nr) {
+			memcpy(wo_block->data, buffer, block_size);
+			return 0;
+		}
+		wo_block = wo_block->next;
+	}
+	wo_block = malloc(sizeof(*wo_block) + block_size);
+	if (!wo_block) {
+		fprintf(stderr, "Out of memory allocating journal block\n");
+		errno = ENOMEM;
+		return -1;
+	}
+	memcpy(wo_block->data, buffer, block_size);
+	wo_block->block_nr = block_nr;
+	wo_block->next = trans->writeout_blocks;
+	trans->writeout_blocks = wo_block;
+	return 0;
+}
+
+/* Mark the indicated blocks as protected (i.e. make sure no other write
+ * modifies them before the transaction is flushed to the journal.
+ */
+int journal_protect_blocks(journal_trans_t *trans, blk64_t start_block,
+                           blk64_t end_block)
+{
+	struct protected_extent *new_extent;
+	assert(trans->transaction_state == TRANS_ACTIVE);
+
+	/* If there is no journal, nothing is protected (as there is no such
+	 * state as 'in journal but not yet flushed to disk'
+	 */
+	if (trans == &no_journal_trans)
 		return 0;
-	base = disk->journal->map;
-	base -= disk->journal->map_offset;
-	length = disk->journal->size + disk->journal->map_offset;
-	tmp = munmap(base, length);
-	if (tmp) {
-		ret_errno = errno;
-		fprintf(stderr, "Error unmapping journal: %s\n",
-		        strerror(ret_errno));
-	}
-	free(disk->journal);
-	disk->journal = NULL;
-	errno = ret_errno;
-	if (errno)
+	/* We might be more efficient and check if we can merge this range
+	 * with another one in the list, but it probably doesn't really
+	 * matter enough to bother.
+	 */
+	new_extent = malloc(sizeof(*new_extent));
+	if (!new_extent) {
+		fprintf(stderr, "Out of memory allocating journal extent\n");
+		errno = ENOMEM;
 		return -1;
+	}
+	new_extent->start_block = start_block;
+	new_extent->end_block = end_block;
+	new_extent->next = trans->protected_extents;
+	trans->protected_extents = new_extent;
 	return 0;
 }
 
-int sync_journal(struct defrag_ctx *disk)
+/* Increment the tail of the journal by one block, properly wrapping around
+ * when the end of the journal is reached. If the journal is full, all data for
+ * transactions already flushed to the journal is written out. If the journal
+ * is still full, all closed transactions are flushed to the disk and the
+ * associated data is written out. If the journal is then still full, an error
+ * (ENOSPC) is generated.
+ */
+static int incr_journal_tail(struct defrag_ctx *c)
 {
-	char *base = disk->journal->map;
-	int tmp;
-	base -= disk->journal->map_offset;
-	if (!disk->journal->journal_alloc) {
-		tmp = msync(base,
-		            disk->journal->size + disk->journal->map_offset,
-		            MS_SYNC);
-		if (tmp < 0) {
-			tmp = errno;
-			fprintf(stderr, "Error sync'ing journal: %s\n",
-			        strerror(tmp));
-			errno = tmp;
-			return -1;
-		}
-	} else {
-		struct allocation *alloc = disk->journal->journal_alloc;
-		int i;
-		for (i = 0; i < alloc->extent_count; i++) {
-			size_t size;
-			off_t offset;
-			size = alloc->extents[i].end_block
-			       - alloc->extents[i].start_block;
-			size *= EXT2_BLOCK_SIZE(&disk->sb);
-			offset = alloc->extents[i].start_block;
-			offset *= EXT2_BLOCK_SIZE(&disk->sb);
-			tmp = pwrite(disk->fd, base, size, offset);
-			if (tmp < 0) {
-				tmp = errno;
-				fprintf(stderr, "Error writing journal: %s\n",
-				        strerror(tmp));
-				errno = tmp;
-				return -1;
-			}
-			base += size;
-		}
-	}
-	tmp = fsync(disk->fd);
-	if (tmp < 0) {
-		tmp = errno;
-		fprintf(stderr, "Error sync'ing journal: %s\n",
-		        strerror(tmp));
-		errno = tmp;
-		return -1;
-	}
-	return 0;
-}
-
-/* Returns 0 for success, positive (errno) for failure */
-static int read_journal(struct defrag_ctx *disk)
-{
-	struct allocation *alloc = disk->journal->journal_alloc;
-	char *base = disk->journal->map;
-	int i, tmp;
-	base -= disk->journal->map_offset;
-	for (i = 0; i < alloc->extent_count; i++) {
-		size_t size;
-		off_t offset;
-		size = alloc->extents[i].end_block
-		       - alloc->extents[i].start_block;
-		size *= EXT2_BLOCK_SIZE(&disk->sb);
-		offset = alloc->extents[i].start_block;
-		offset *= EXT2_BLOCK_SIZE(&disk->sb);
-		tmp = pread(disk->fd, base, size, offset);
-		if (tmp < 0) {
-			tmp = errno;
-			fprintf(stderr, "Error writing journal: %s\n",
-				strerror(tmp));
-			errno = tmp;
-			return errno;
-		}
-		base += size;
-	}
-	return 0;
-}
-
-static int map_journal(struct defrag_ctx *disk)
-{
-	struct inode *ino;
-	char *map;
-	size_t size;
-	int offset_diff, ret_errno;
-	disk->journal->journal_alloc = NULL;
-       	ino = read_inode(disk, EXT2_JOURNAL_INO);
-	if (ino == NULL) {
-		fprintf(stderr, "Journal inode corrupt\n");
-		errno = EINVAL;
-		return -1;
-	}
-	if (ino->data->extent_count == 1) {
-		off_t offset;
-		offset = ino->data->extents[0].start_block;
-		printf("Mmapping whole range from %lu ", offset);
-		offset *= EXT2_BLOCK_SIZE(&disk->sb);
-		offset_diff = offset % sysconf(_SC_PAGE_SIZE);
-		size = ino->data->block_count * EXT2_BLOCK_SIZE(&disk->sb);
-		printf("(%lu blocks)\n", size / EXT2_BLOCK_SIZE(&disk->sb));
-		map = mmap(NULL,
-		           size + offset_diff,
-		           PROT_READ | PROT_WRITE,
-		           global_settings.simulate ? MAP_PRIVATE : MAP_SHARED,
-			   disk->fd,
-			   offset - offset_diff);
-		free(ino->data);
-		if (map == MAP_FAILED) {
-			ret_errno = errno;
-			fprintf(stderr, "mmapping journal failed: %s\n",
-			        strerror(ret_errno));
-			goto out_free_inode;
-		}
-		map += offset_diff;
-	} else {
-		struct allocation *data = ino->data;
-		char *next_addr, *tmp;
-		off_t offset;
-		e2_blkcnt_t num_blocks = 0;
-		int blocks_per_page = sysconf(_SC_PAGE_SIZE)
-		                      / EXT2_BLOCK_SIZE(&disk->sb);
-		int i, map_flags;
-		num_blocks = data->block_count;
-		/* First map an anonymous mapping big enough for the whole
-		 * journal so we get an appropriate address, and a fall-back
-		 * mapping in case we can't map the journal proper.
-		 */
-		size = num_blocks * EXT2_BLOCK_SIZE(&disk->sb);
-		offset_diff = 0;
-		map = mmap(NULL, size, PROT_READ | PROT_WRITE,
-		           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-		if (map == MAP_FAILED) {
-			ret_errno = errno;
-			fprintf(stderr, "Error allocating memory for journal: "
-			        "%s\n", strerror(ret_errno));
-			free(ino->data);
-			goto out_free_inode;
-		}
-
-		/* Check that all extents of the journal are page-aligned */
-		for (i = 0; i < data->extent_count - 1; i++) {
-			if (data->extents[i].start_block % blocks_per_page
-			    || data->extents[i].end_block % blocks_per_page)
-			{
-				disk->journal->journal_alloc = data;
-				disk->journal->map = map;
-				disk->journal->size = size;
-				disk->journal->map_offset = offset_diff;
-				ret_errno = read_journal(disk);
-				if (ret_errno) {
-					free(ino->data);
-					munmap(map,
-				               num_blocks *
-					            EXT2_BLOCK_SIZE(&disk->sb));
-				}
-				goto out_free_inode;
-			}
-		}
-		/* Last extent end need not be aligned, as we the mmap
-		 * length doesn't have to be aligned.
-		 */
-		if (data->extents[i].start_block % blocks_per_page) {
-			disk->journal->journal_alloc = data;
-			disk->journal->map = map;
-			disk->journal->size = size;
-			disk->journal->map_offset = offset_diff;
-			ret_errno = read_journal(disk);
-			if (ret_errno) {
-				free(ino->data);
-				munmap(map,
-				       num_blocks * EXT2_BLOCK_SIZE(&disk->sb));
-			}
-			goto out_free_inode;
-		}
-
-		/* And we map the actual journal extents over the anonymous
-		 * mapping using MAP_FIXED so we can pretent everything
-		 * is contiguous
-		 */
-		offset = data->extents[0].start_block;
-		offset *= EXT2_BLOCK_SIZE(&disk->sb);
-		offset_diff = offset % sysconf(_SC_PAGE_SIZE);
-		size = data->extents->end_block - data->extents->start_block;
-		size *= EXT2_BLOCK_SIZE(&disk->sb);
-		map_flags = (global_settings.simulate ? MAP_PRIVATE
-		                                      : MAP_SHARED
-		            ) && MAP_FIXED;
-		tmp = mmap(map, size + offset_diff, PROT_READ | PROT_WRITE,
-			   map_flags, disk->fd, offset - offset_diff);
-		if (tmp == MAP_FAILED) {
-			ret_errno = errno;
-			fprintf(stderr, "Error mmapping journal: %s\n",
-			        strerror(ret_errno));
-			munmap(map, num_blocks * EXT2_BLOCK_SIZE(&disk->sb));
-			free(ino->data);
-			goto out_free_inode;
-		}
-		map += offset_diff;
-		next_addr = map + size;
-		for (i = 1; i < data->extent_count; i++) {
-			offset = data->extents[i].start_block;
-			offset *= EXT2_BLOCK_SIZE(&disk->sb);
-			size = data->extents[i].end_block
-			       - data->extents[i].start_block;
-			size *= EXT2_BLOCK_SIZE(&disk->sb);
-			tmp = mmap(next_addr, size,
-			           PROT_READ | PROT_WRITE, map_flags,
-				   disk->fd, offset);
-			if (tmp == MAP_FAILED) {
-				ret_errno = errno;
-				fprintf(stderr, "Error mmapping journal: %s\n",
-					strerror(ret_errno));
-				munmap(map,
-				       num_blocks * EXT2_BLOCK_SIZE(&disk->sb));
-				free(ino->data);
-				goto out_free_inode;
-			}
-			next_addr += size;
-		}
-		free(ino->data);
-		size = num_blocks * EXT2_BLOCK_SIZE(&disk->sb);
-	}
-	disk->journal->map = map;
-	disk->journal->size = size;
-	disk->journal->map_offset = offset_diff;
-	ret_errno = 0;
-out_free_inode:
-	free(ino->metadata);
-	free(ino->sparse);
-	free(ino);
-	if (ret_errno)
-		free(disk->journal);
-	errno = ret_errno;
-	if (ret_errno)
-		return -1;
-	else
+	char *new_tail;
+	int ret;
+	new_tail = c->journal->tail + c->journal->blocksize;
+	if (new_tail >= (char *)(c->journal->map) + c->journal->size)
+		new_tail = (char *)(c->journal->map) + c->journal->blocksize;
+	if (new_tail != c->journal->head) {
+		c->journal->tail = new_tail;
 		return 0;
-}
-
-static int journal_init_v1(struct defrag_ctx *disk)
-{
-	struct journal_superblock_s *sb = disk->journal->map;
-	disk->journal->tag_size = JBD2_TAG_SIZE32;
-	if (be32toh(sb->s_start != 0)) {
-		fprintf(stderr, "Journal is not clean, run e2fsck\n");
-		errno = EBUSY;
+	}
+	assert(c->journal->transactions);
+	if (c->journal->transactions->transaction_state == TRANS_ACTIVE) {
+		errno = ENOSPC;
 		return -1;
 	}
-	disk->journal->head = disk->journal->map;
-	disk->journal->head += disk->journal->blocksize;
-	disk->journal->tail = disk->journal->head;
-
-	disk->journal->max_trans_blocks = be32toh(sb->s_maxlen) / 4;
-	return 0;
-}
-
-static int journal_init_v2(struct defrag_ctx *disk)
-{
-	int tags_per_block, max_trans_data;
-	struct journal_superblock_s *sb = disk->journal->map;
-	if (sb->s_feature_incompat & htobe32(JBD2_FEATURE_INCOMPAT_64BIT))
-		disk->journal->tag_size = JBD2_TAG_SIZE64;
-	else
-		disk->journal->tag_size = JBD2_TAG_SIZE32;
-	if (be32toh(sb->s_start != 0)) {
-		fprintf(stderr, "Journal is not clean, run e2fsck\n");
-		errno = EBUSY;
-		return -1;
+	ret = sync_disk(c); /* Clear any DONE transactions */
+	if (ret)
+		return ret;
+	if (new_tail != c->journal->head) {
+		c->journal->tail = new_tail;
+		return 0;
 	}
-	disk->journal->head = disk->journal->map;
-	disk->journal->head += disk->journal->blocksize;
-	disk->journal->tail = disk->journal->head;
 
-	tags_per_block = disk->journal->blocksize - sizeof(journal_header_t);
-	tags_per_block /= sizeof(journal_block_tag_t);
-
-	max_trans_data = sb->s_max_transaction - 1; /* -1 for commit block */
-	max_trans_data -= (max_trans_data + tags_per_block - 1)/ tags_per_block;
-
-	if (max_trans_data > be32toh(sb->s_max_trans_data))
-		disk->journal->max_trans_blocks = be32toh(sb->s_max_trans_data);
-	else
-		disk->journal->max_trans_blocks = max_trans_data;
-
-	return 0;
+	ret = flush_journal(c);
+	if (ret)
+		return ret;
+	ret = sync_disk(c); /* Clear any nonactive transactions */
+	if (ret)
+		return ret;
+	if (new_tail != c->journal->head) {
+		c->journal->tail = new_tail;
+		return 0;
+	}
+	errno = ENOSPC;
+	return -1;
 }
 
-int journal_init(struct defrag_ctx *disk)
+/* Write the data associated with the given transaction out to the disk, and
+ * remove the transaction from the journal. The transaction must be FLUSHED. All
+ * preceding transactions are also written out. The transaction will be DONE
+ * afterwards.
+ */
+int writeout_trans_data(struct defrag_ctx *c, struct journal_trans *trans)
 {
 	int ret;
-	disk->journal = NULL;
-	if (EXT2_HAS_COMPAT_FEATURE(&disk->sb, EXT3_FEATURE_COMPAT_HAS_JOURNAL))
-	{
-		struct journal_superblock_s *sb;
-		disk->journal = malloc(sizeof(*disk->journal));
-		if (!disk->journal) {
-			fprintf(stderr, "Out of memory reading journal\n");
-			errno = ENOMEM;
-			return -1;
-		}
-		ret = map_journal(disk);
-		if (ret)
+	struct writeout_block *block;
+	while (c->journal->transactions != trans) {
+		assert(c->journal->transactions);
+		ret = writeout_trans_data(c, c->journal->transactions);
+		if (ret < 0)
 			return ret;
-		sb = disk->journal->map;
-		if (be32toh(sb->s_header.h_magic) != JBD2_MAGIC_NUMBER) {
-			fprintf(stderr,
-			        "Journal superblock magic value wrong\n");
-			unmap_journal(disk);
-			errno = EIO;
-			return -1;
-		}
-		if (be32toh(sb->s_maxlen) * be32toh(sb->s_blocksize)
-		    != disk->journal->size)
-		{
-			fprintf(stderr, "Journal inode and superblock "
-			        "disagree about journal size\n");
-			fprintf(stderr, "inode: %lu bytes, sb: %u bytes\n",
-			        disk->journal->size,
-			        be32toh(sb->s_maxlen) * be32toh(sb->s_blocksize));
-			unmap_journal(disk);
-			errno = EIO;
-			return -1;
-		}
-		disk->journal->blocksize = be32toh(sb->s_blocksize);
-		switch(be32toh(sb->s_header.h_blocktype)) {
-		case JBD2_SUPERBLOCK_V1:
-			return journal_init_v1(disk);
-		case JBD2_SUPERBLOCK_V2:
-			return journal_init_v2(disk);
-		default:
-			fprintf(stderr,
-			        "Journal superblock type not recognized\n");
-			unmap_journal(disk);
-			return -1;
-		}
 	}
+	assert(trans->transaction_state == TRANS_FLUSHED);
+	block = trans->writeout_blocks;
+	while (block) {
+		ret = write_block(c, block->data, block->block_nr);
+		if (ret < 0)
+			return ret;
+		block = block->next;
+	}
+	trans->transaction_state = TRANS_DONE;
+	return 0;
+}
+
+/* Flushes all the writeout blocks in the transaction to the journal, as
+ * well as the appropriate descriptor blocks.
+ * Returns the number of blocks written, or negative for error.
+ */
+static int flush_trans_blocks(struct defrag_ctx *c, struct journal_trans *trans,
+                              __u32 sequence)
+{
+	char *descr, *descr_block_end;
+	struct writeout_block *b_descr;
+	int ret, count = 0;
+	char first_in_descr = 1;
+
+	descr_block_end = (char *)c->journal->tail + c->journal->blocksize;
+	descr = descr_block_end; /* Force new descriptor at start */
+	b_descr = trans->writeout_blocks;
+
+	while (b_descr) {
+		struct journal_block_tag_s *tag;
+		if (descr >= descr_block_end - c->journal->tag_size) {
+			struct journal_header_s *hdr;
+			descr = c->journal->tail;
+			descr_block_end = descr + c->journal->blocksize;
+			ret = incr_journal_tail(c);
+			if (ret < 0)
+				return ret;
+			hdr = (struct journal_header_s *)descr;
+			hdr->h_magic = htobe32(JBD2_MAGIC_NUMBER);
+			hdr->h_blocktype = htobe32(JBD2_DESCRIPTOR_BLOCK);
+			hdr->h_sequence = htobe32(sequence);
+			descr = descr + sizeof(struct journal_header_s);
+			first_in_descr = 1;
+		}
+		tag = (struct journal_block_tag_s *)descr;
+		tag->t_blocknr = htobe32(b_descr->block_nr & 0xFFFFFFFF);
+		tag->t_flags = !first_in_descr ? htobe32(JBD2_FLAG_SAME_UUID)
+		                               : 0;
+		if (!b_descr->next)
+			tag->t_flags |= htobe32(JBD2_FLAG_LAST_TAG);
+		if (c->journal->tag_size >= JBD2_TAG_SIZE64)
+			tag->t_blocknr_high = htobe32(b_descr->block_nr >> 32);
+		memcpy(c->journal->tail, b_descr->data, c->journal->blocksize);
+		ret = incr_journal_tail(c);
+		if (ret < 0)
+			return ret;
+		descr = descr + c->journal->tag_size;
+		if (first_in_descr) {
+			memset(descr, 0, JBD2_UUID_BYTES);
+			first_in_descr = 0;
+		}
+		if (descr >= descr_block_end - c->journal->tag_size)
+			tag->t_flags |= htobe32(JBD2_FLAG_LAST_TAG);
+		b_descr = b_descr->next;
+		count++;
+	}
+	return count;
+}
+
+/* Flushes the given transaction to disk. and marks it as FLUSHED. The
+ * transaction should be DSYNC before calling this. The journal will be
+ * synced after the flush, to ensure ordering of the transactions on disk.
+ */
+static int flush_transaction(struct defrag_ctx *c, struct journal_trans *trans)
+{
+	void *trans_begin;
+	struct commit_header *hdr;
+	__u64 tmp;
+	__u32 sequence;
+	int ret, count;
+	assert(trans->transaction_state != TRANS_ACTIVE);
+	if (!trans->writeout_blocks) {
+		trans->transaction_state = TRANS_FLUSHED;
+		return 0;
+	}
+	assert(trans->transaction_state == TRANS_DSYNC);
+	sequence = c->journal->next_sequence++;
+	trans_begin = c->journal->tail;
+	tmp = (char *)trans_begin - (char *)c->journal->map;
+	trans->start_block = tmp / c->journal->blocksize;
+	count = flush_trans_blocks(c, trans, sequence);
+	if (count < 0)
+		return count;
+	hdr = (struct commit_header *)c->journal->tail;
+	ret = incr_journal_tail(c);
+	if (ret < 0)
+		return ret;
+	if (*(__u32 *)c->journal->tail == htobe32(JBD2_MAGIC_NUMBER)) {
+		ret = sync_journal(c);
+		if (ret < 0)
+			return ret;
+		*(__u32 *)c->journal->tail = 0;
+	}
+	hdr->h_magic = htobe32(JBD2_MAGIC_NUMBER);
+	hdr->h_blocktype = htobe32(JBD2_COMMIT_BLOCK);
+	hdr->h_sequence = htobe32(sequence);
+	if (c->journal->flags & FLAG_JOURNAL_CHECKSUM) {
+		hdr->h_chksum_type = JBD2_SHA1_CHKSUM;
+		hdr->h_chksum_size = 20;
+		memset(hdr->h_chksum, 0, 20);
+		/* TODO: Implement actual checksumming */
+	}
+	hdr->h_commit_sec = 0;
+	hdr->h_commit_nsec = 0;
+	trans->transaction_state = TRANS_FLUSHED;
+	ret = sync_journal(c);
+	if (ret < 0)
+		return ret;
+	while (trans->protected_extents) {
+		void *tmp = trans->protected_extents;
+		trans->protected_extents = trans->protected_extents->next;
+		free(tmp);
+	}
+	return writeout_trans_data(c, trans);
+}
+
+/* Flush all flushable transaction to the journal.
+ * All DSYNC transactions will be flushed to the journal and marked FLUSHED.
+ */
+int flush_journal(struct defrag_ctx *c)
+{
+	struct journal_trans *trans;
+	trans = c->journal->transactions;
+	while (trans)
+	{
+		if (trans->transaction_state == TRANS_DSYNC) {
+			int ret;
+			ret = flush_transaction(c, trans);
+			if (ret < 0)
+				return ret;
+		}
+		if (trans->transaction_state < TRANS_DSYNC) {
+			/* Cannot flush later transactions without violating
+			 * ordering constraint
+			 */
+			return 0;
+		}
+		trans = trans->next;
+	}
+	return 0;
+}
+
+/* Flush all CLOSED transaction upto and including the given transaction out
+ * to the journal (and therefore make their protected blocks unprotected).
+ * Disk sync may be performed to writeout data for some transactions.
+ */
+int journal_flush_upto(struct defrag_ctx *c, struct journal_trans *trans)
+{
+	struct journal_trans *current;
+	do {
+		int ret;
+		current = c->journal->transactions;
+		/* The current transaction cannot be NULL, or the caller could
+		 * not have given us a transaction.
+		 */
+		assert(current->transaction_state != TRANS_ACTIVE);
+		if (current->transaction_state == TRANS_CLOSED)
+			sync_disk(c);
+		assert(current->transaction_state == TRANS_DSYNC);
+		ret = flush_transaction(c, current);
+		if (ret < 0)
+			return ret;
+	} while (current != trans);
+	return 0;
+}
+
+/* Ensure the given block range is not protected by any transactions. This
+ * means flushing any older transactions to journal if they do protect the
+ * range.
+ * Note that a range protected by the active transaction cannot be unprotected.
+ */
+int journal_ensure_unprotected(struct defrag_ctx *c, blk64_t start_block,
+                               blk64_t end_block)
+{
+	struct journal_trans *trans;
+	/* If there is no journal, nothing is protected (as there is no such
+	 * state as 'in journal but not yet flushed to disk'
+	 */
+	if (!c->journal)
+		return 0;
+	trans = c->journal->transactions;
+	while (trans) {
+		struct protected_extent *extent;
+		struct writeout_block *block;
+		extent = trans->protected_extents;
+		while (extent) {
+			if ((extent->start_block <= start_block
+			         && extent->end_block >= start_block)
+			    || (extent->start_block <= end_block
+			         && extent->end_block >= end_block))
+			{
+				int ret;
+				ret = journal_flush_upto(c, trans);
+				return ret || journal_ensure_unprotected(c,
+				                        start_block, end_block);
+			}
+			extent = extent->next;
+		}
+		block = trans->writeout_blocks;
+		while (block) {
+			if (block->block_nr >= start_block
+			    && block->block_nr <= end_block)
+			{
+				int ret;
+				ret = journal_flush_upto(c, trans);
+				return ret || journal_ensure_unprotected(c,
+				                        start_block, end_block);
+			}
+			block = block->next;
+		}
+		trans = trans->next;
+	}
+	return 0;
+}
+
+int close_journal(struct defrag_ctx *c)
+{
+	int ret;
+	if (!c->journal)
+		return 0;
+	ret = sync_disk(c); /* Clear any DONE transactions */
+	if (ret)
+		return ret;
+	ret = flush_journal(c);
+	if (ret)
+		return ret;
+	ret = sync_disk(c); /* Clear any nonactive transactions */
+	if (ret)
+		return ret;
+	assert(!c->journal->transactions);
 	return 0;
 }

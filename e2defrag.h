@@ -108,17 +108,59 @@ struct inode {
 	int num_sparse;
 };
 
+/* The possible states a journal transaction can be in: */
+#define TRANS_ACTIVE	1 /* The transaction might have more blocks added */
+#define TRANS_CLOSED	2 /* The transaction cannot have more blocks added */
+#define TRANS_DSYNC	3 /* Transaction is closed, and data synced to disk */
+#define TRANS_FLUSHED	4 /* Written to journal, waiting for metadata write */
+/* Note that a flushed transaction is automatically synced to journal, to
+ * protect transaction ordering
+ */
+#define TRANS_DONE	5 /* Metadata written to disk, waiting for sync */
+
+struct journal_trans {
+	struct journal_trans *next;
+	struct defrag_ctx *ctx;
+	struct writeout_block {
+		struct writeout_block *next;
+		blk64_t block_nr;
+		unsigned data[];
+	} *writeout_blocks;
+	/* A protected extent is one which must not be changed before this
+	 * transaction has been comitted.
+	 */
+	struct protected_extent {
+		struct protected_extent *next;
+		blk64_t start_block;
+		blk64_t end_block;
+	} *protected_extents;
+	
+	/* The in-journal block at which the transaction starts */
+	__u32 start_block;
+
+	int transaction_state;
+};
+
+typedef struct journal_trans journal_trans_t;
+
 struct disk_journal {
 	void *map;
-	char *head; /* Start of the first unflushed transaction */
+	char *head; /* Start of the first unsynced transaction */
 	char *tail; /* One past the end of the last (or current) transaction */
 	struct allocation *journal_alloc; /* NULL if map is a proper mmap */
+	journal_trans_t *transactions;
+	journal_trans_t *last_transaction;
 	off_t map_offset;
 	size_t size;
+	uint32_t next_sequence;
 	int blocksize;
 	int max_trans_blocks; /* Maximum number of data blocks per trans. */
 	unsigned char tag_size;
+	unsigned char flags;
 };
+
+#define FLAG_ASYNC_COMMIT	1
+#define FLAG_JOURNAL_CHECKSUM	2
 
 struct defrag_ctx {
 	struct ext2_super_block sb;
@@ -195,6 +237,8 @@ int defrag_file_interactive(struct defrag_ctx *c);
 struct defrag_ctx *open_drive(char *filename);
 int read_block(struct defrag_ctx *c, void *buf, blk64_t block);
 int write_inode(struct defrag_ctx *c, ext2_ino_t inode_nr);
+int sync_journal(struct defrag_ctx *disk);
+int sync_disk(struct defrag_ctx *c);
 int write_block(struct defrag_ctx *c, void *buf, blk64_t block);
 int write_bitmap_block(struct defrag_ctx *c, __u32 group_nr);
 int write_gd(struct defrag_ctx *c, __u32 group_nr);
@@ -202,6 +246,15 @@ int set_e2_filesystem_data(struct defrag_ctx *c);
 void close_drive(struct defrag_ctx *c);
 
 /* journal.c */
+journal_trans_t *start_transaction(struct defrag_ctx *c);
+void finish_transaction(journal_trans_t *trans);
+void free_transaction(journal_trans_t *trans);
+int journal_write_block(journal_trans_t *trans, blk64_t block_nr, void *buffer);
+int writeout_trans_data(struct defrag_ctx *c, struct journal_trans *trans);
+int flush_journal(struct defrag_ctx *c);
+int close_journal(struct defrag_ctx *c);
+
+/* journal_init.c */
 int unmap_journal(struct defrag_ctx *disk);
 int journal_init(struct defrag_ctx *disk);
 

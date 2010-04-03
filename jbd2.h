@@ -63,7 +63,9 @@ typedef struct journal_header_s
 
 #define JBD2_CRC32_CHKSUM_SIZE 4
 
-#define JBD2_CHECKSUM_BYTES (32 / sizeof(__u32))
+#define JBD2_CHECKSUM_BYTES 32
+
+#define JBD2_UUID_BYTES 16
 /*
  * Commit block header for storing transactional checksums:
  */
@@ -74,7 +76,7 @@ struct commit_header {
 	unsigned char   h_chksum_type;
 	unsigned char   h_chksum_size;
 	unsigned char 	h_padding[2];
-	__be32 		h_chksum[JBD2_CHECKSUM_BYTES];
+	__be32 		h_chksum[JBD2_CHECKSUM_BYTES / sizeof(__be32)];
 	__be64		h_commit_sec;
 	__be32		h_commit_nsec;
 };

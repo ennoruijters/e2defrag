@@ -89,6 +89,7 @@ The first digit signifies the kind of thing we're testing:
 	0 - The most basic stuff (i.e. does it even start?)
 	1 - Basic defragmentation commands
 	2 - Interactive mode defragmentation
+	3 - Unit test
 	The other digits are reserved for now.
 
 The second digit signifies the kind of disk the command is
@@ -99,6 +100,8 @@ defragmenting:
 	2 - ext2/3 with special (e.g. sparse) blocks
 	3 - ext4 (with extents) with only normal extents
 	4 - ext4 (with extents) with special (e.g. sparse) extents
+	5 - ext2/3 journal
+	6 - ext4 journal (with special options, like checksumming)
 	The other digits are reserved for now.
 
 The third digit signifies the command-line switches being tested.

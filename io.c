@@ -17,10 +17,12 @@
 
 #define _LARGEFILE64_SOURCE
 #define _XOPEN_SOURCE 600
+#define _BSD_SOURCE
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <endian.h>
 #include <errno.h>
 #include <limits.h>
 #include <malloc.h>
@@ -28,6 +30,7 @@
 #include "e2defrag.h"
 #include "extree.h"
 #include "crc16.h"
+#include "jbd2.h"
 
 int read_block(struct defrag_ctx *c, void *buf, blk64_t block)
 {
@@ -95,6 +98,105 @@ int write_gd(struct defrag_ctx *c, __u32 group_nr)
 	block_nr = (disk_offset + offset) / EXT2_BLOCK_SIZE(&c->sb);
 	gd = c->gd_map + (offset - (offset % EXT2_BLOCK_SIZE(&c->sb)));
 	return write_block(c, gd, block_nr);
+}
+
+/* Sync all flushed transactions to the journal */
+int sync_journal(struct defrag_ctx *disk)
+{
+	char *base = disk->journal->map;
+	struct journal_superblock_s *sb;
+	struct journal_trans *trans;
+	int tmp;
+	base -= disk->journal->map_offset;
+	sb = (void *)base;
+	if (disk->journal->transactions
+	    && disk->journal->transactions->transaction_state >= TRANS_FLUSHED)
+	{
+		struct journal_trans *trans;
+		struct journal_header_s *hdr;
+		trans = disk->journal->transactions;
+		sb->s_start = htobe32(trans->start_block);
+		hdr = (void *)(base
+		              + disk->journal->blocksize * trans->start_block);
+		sb->s_sequence = hdr->h_sequence;
+	} else {
+		sb->s_start = 0;
+	}
+	if (!disk->journal->journal_alloc) {
+		tmp = msync(base,
+		            disk->journal->size + disk->journal->map_offset,
+		            MS_SYNC);
+		if (tmp < 0) {
+			tmp = errno;
+			fprintf(stderr, "Error sync'ing journal: %s\n",
+			        strerror(tmp));
+			errno = tmp;
+			return -1;
+		}
+	} else {
+		struct allocation *alloc = disk->journal->journal_alloc;
+		int i;
+		for (i = 0; i < alloc->extent_count; i++) {
+			size_t size;
+			off_t offset;
+			size = alloc->extents[i].end_block
+			       - alloc->extents[i].start_block;
+			size *= EXT2_BLOCK_SIZE(&disk->sb);
+			offset = alloc->extents[i].start_block;
+			offset *= EXT2_BLOCK_SIZE(&disk->sb);
+			tmp = pwrite(disk->fd, base, size, offset);
+			if (tmp < 0) {
+				tmp = errno;
+				fprintf(stderr, "Error writing journal: %s\n",
+				        strerror(tmp));
+				errno = tmp;
+				return -1;
+			}
+			base += size;
+		}
+	}
+	tmp = fsync(disk->fd); /* fdatasync is probably better here */
+	if (tmp < 0) {
+		tmp = errno;
+		fprintf(stderr, "Error sync'ing journal: %s\n",
+		        strerror(tmp));
+		errno = tmp;
+		return -1;
+	}
+	trans = disk->journal->transactions;
+	return 0;
+}
+
+int sync_disk(struct defrag_ctx *c)
+{
+	int ret;
+	struct journal_trans *trans;
+	if (c->journal) {
+		trans = c->journal->transactions;
+		while (trans && trans->transaction_state == TRANS_DONE)
+		{
+			ptrdiff_t offset;
+			c->journal->transactions = trans->next;
+			free_transaction(trans);
+			trans = c->journal->transactions;
+			if (trans && trans->start_block) {
+				offset = trans->start_block;
+				offset *= c->journal->blocksize;
+			} else {
+				offset = c->journal->blocksize;
+				c->journal->tail = c->journal->map;
+				c->journal->tail += offset;
+			}
+			c->journal->head = (char *)c->journal->map + offset;
+		}
+		while (trans) {
+			if (trans->transaction_state == TRANS_CLOSED)
+				trans->transaction_state = TRANS_DSYNC;
+			trans = trans->next;
+		}
+	}
+	ret = fsync(c->fd);
+	return ret;
 }
 
 static int read_gds(struct defrag_ctx *c)
@@ -256,6 +358,7 @@ long parse_inode_table(struct defrag_ctx *c, blk64_t bitmap_block,
 void close_drive(struct defrag_ctx *c)
 {
 	int i;
+	sync_disk(c);
 	c->sb.s_state |= EXT2_VALID_FS;
 	if (lseek(c->fd, SUPERBLOCK_OFFSET, SEEK_SET) >= 0) {
 		write(c->fd, &c->sb, SUPERBLOCK_SIZE);
@@ -283,6 +386,7 @@ void close_drive(struct defrag_ctx *c)
 		rb_erase(c->free_tree_by_size.rb_node, &c->free_tree_by_size);
 		free(f);
 	}
+	close_journal(c);
 	unmap_journal(c);
 	close(c->fd);
 	free(c);

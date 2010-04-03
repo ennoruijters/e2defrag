@@ -72,6 +72,20 @@ load_image () {
 	fi
 }
 
+load_data () {
+	if [ "$#" -ne 1 ]; then
+		echo "bug in test script: not 1 parameter to load_data"
+		test_end
+		exit 1;
+	fi
+	eval "cp ../$1" .
+	if [ "$?" != 0 ]; then
+		echo "test error: could not load data file $1"
+		test_end
+		exit 1;
+	fi
+}
+
 test_end () {
 	if [ "$infra_failed" != 0 ]; then
 		echo "Could not test: $test_name"
