@@ -250,6 +250,8 @@ journal_trans_t *start_transaction(struct defrag_ctx *c);
 void finish_transaction(journal_trans_t *trans);
 void free_transaction(journal_trans_t *trans);
 int journal_write_block(journal_trans_t *trans, blk64_t block_nr, void *buffer);
+int journal_ensure_unprotected(struct defrag_ctx *c, blk64_t start_block,
+                               blk64_t end_block);
 int writeout_trans_data(struct defrag_ctx *c, struct journal_trans *trans);
 int flush_journal(struct defrag_ctx *c);
 int close_journal(struct defrag_ctx *c);

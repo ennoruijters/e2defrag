@@ -140,7 +140,7 @@ int sync_journal(struct defrag_ctx *disk)
 			size_t size;
 			off_t offset;
 			size = alloc->extents[i].end_block
-			       - alloc->extents[i].start_block;
+			       - alloc->extents[i].start_block + 1;
 			size *= EXT2_BLOCK_SIZE(&disk->sb);
 			offset = alloc->extents[i].start_block;
 			offset *= EXT2_BLOCK_SIZE(&disk->sb);

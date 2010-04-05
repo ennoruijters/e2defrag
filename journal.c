@@ -201,12 +201,6 @@ int writeout_trans_data(struct defrag_ctx *c, struct journal_trans *trans)
 {
 	int ret;
 	struct writeout_block *block;
-	while (c->journal->transactions != trans) {
-		assert(c->journal->transactions);
-		ret = writeout_trans_data(c, c->journal->transactions);
-		if (ret < 0)
-			return ret;
-	}
 	assert(trans->transaction_state == TRANS_FLUSHED);
 	block = trans->writeout_blocks;
 	while (block) {
@@ -366,20 +360,28 @@ int flush_journal(struct defrag_ctx *c)
 int journal_flush_upto(struct defrag_ctx *c, struct journal_trans *trans)
 {
 	struct journal_trans *current;
+	current = c->journal->transactions;
+	while (current != trans && current->transaction_state >= TRANS_FLUSHED)
+	{
+		current = current->next;
+		continue;
+	}
 	do {
 		int ret;
-		current = c->journal->transactions;
 		/* The current transaction cannot be NULL, or the caller could
 		 * not have given us a transaction.
 		 */
 		assert(current->transaction_state != TRANS_ACTIVE);
 		if (current->transaction_state == TRANS_CLOSED)
 			sync_disk(c);
-		assert(current->transaction_state == TRANS_DSYNC);
-		ret = flush_transaction(c, current);
-		if (ret < 0)
-			return ret;
-	} while (current != trans);
+		assert(current->transaction_state >= TRANS_DSYNC);
+		if (current->transaction_state < TRANS_FLUSHED) {
+			ret = flush_transaction(c, current);
+			if (ret < 0)
+				return ret;
+		}
+		current = current->next;
+	} while (current && current != trans);
 	return 0;
 }
 
@@ -410,8 +412,8 @@ int journal_ensure_unprotected(struct defrag_ctx *c, blk64_t start_block,
 			{
 				int ret;
 				ret = journal_flush_upto(c, trans);
-				return ret || journal_ensure_unprotected(c,
-				                        start_block, end_block);
+				if (ret < 0)
+					return ret;
 			}
 			extent = extent->next;
 		}
@@ -422,8 +424,8 @@ int journal_ensure_unprotected(struct defrag_ctx *c, blk64_t start_block,
 			{
 				int ret;
 				ret = journal_flush_upto(c, trans);
-				return ret || journal_ensure_unprotected(c,
-				                        start_block, end_block);
+				if (ret < 0)
+					return ret;
 			}
 			block = block->next;
 		}
