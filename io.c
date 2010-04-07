@@ -108,7 +108,7 @@ int sync_journal(struct defrag_ctx *disk)
 	struct journal_trans *trans;
 	int tmp;
 	base -= disk->journal->map_offset;
-	sb = (void *)base;
+	sb = (void *)disk->journal->map;
 	if (disk->journal->transactions
 	    && disk->journal->transactions->transaction_state >= TRANS_FLUSHED)
 	{
@@ -116,7 +116,7 @@ int sync_journal(struct defrag_ctx *disk)
 		struct journal_header_s *hdr;
 		trans = disk->journal->transactions;
 		sb->s_start = htobe32(trans->start_block);
-		hdr = (void *)(base
+		hdr = (void *)((char *)disk->journal->map
 		              + disk->journal->blocksize * trans->start_block);
 		sb->s_sequence = hdr->h_sequence;
 	} else {
