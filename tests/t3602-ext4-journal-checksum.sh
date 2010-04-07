@@ -41,7 +41,7 @@ test_and_continue "file in image should have old data" \
                    | debugfs ext4-journal.img \
 		   > /dev/null 2>/dev/null && cmp file old_data > /dev/null"
 
-infra_cmd "e2fsck -v -y ext4-journal.img 2>&1 >fsckout || true"
+infra_cmd "e2fsck -v -p ext4-journal.img 2>&1 >fsckout || true"
 
 test_and_continue "file in image should have new data" \
                   "echo \"dump_inode <12> file\nquit\n\" \

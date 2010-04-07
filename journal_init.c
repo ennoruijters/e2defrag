@@ -49,6 +49,13 @@ int unmap_journal(struct defrag_ctx *disk)
 	errno = ret_errno;
 	if (errno)
 		return -1;
+	/* The following should really go in some kind of close_journal
+	 * functions
+	 */
+	disk->sb.s_feature_incompat &= ~EXT3_FEATURE_INCOMPAT_RECOVER;
+	tmp = pwrite(disk->fd, &disk->sb, SUPERBLOCK_SIZE, SUPERBLOCK_OFFSET);
+	if (tmp < SUPERBLOCK_SIZE)
+		return -1;
 	return 0;
 }
 
@@ -340,6 +347,12 @@ int journal_init(struct defrag_ctx *disk)
 		disk->journal->blocksize = be32toh(sb->s_blocksize);
 		disk->journal->transactions = NULL;
 		disk->journal->last_transaction = NULL;
+		disk->sb.s_feature_incompat |= EXT3_FEATURE_INCOMPAT_RECOVER;
+		ret = pwrite(disk->fd, &disk->sb, SUPERBLOCK_SIZE,
+		             SUPERBLOCK_OFFSET);
+		if (ret < SUPERBLOCK_SIZE)
+			return -1;
+
 		switch(be32toh(sb->s_header.h_blocktype)) {
 		case JBD2_SUPERBLOCK_V1:
 			return journal_init_v1(disk);
