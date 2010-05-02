@@ -284,12 +284,19 @@ static int journal_init_v2(struct defrag_ctx *disk)
 	disk->journal->tail = disk->journal->head;
 	disk->journal->next_sequence = be32toh(sb->s_sequence) + 1;
 
-	tags_per_block = disk->journal->blocksize - sizeof(journal_header_t);
-	tags_per_block -= JBD2_UUID_BYTES;
-	tags_per_block /= sizeof(journal_block_tag_t);
+	if (sb->s_max_transaction != 0) {
+		tags_per_block = disk->journal->blocksize
+		                 - sizeof(journal_header_t);
+		tags_per_block -= JBD2_UUID_BYTES;
+		tags_per_block /= sizeof(journal_block_tag_t);
 
-	max_trans_data = sb->s_max_transaction - 1; /* -1 for commit block */
-	max_trans_data -= (max_trans_data + tags_per_block - 1)/ tags_per_block;
+		max_trans_data = be32toh(sb->s_max_transaction) - 1;
+		/* -1 for commit block */
+		max_trans_data -= (max_trans_data + tags_per_block - 1)
+		                  / tags_per_block;
+	} else {
+		max_trans_data = be32toh(sb->s_maxlen) / 4;
+	}
 
 	disk->journal->flags = 0;
 	if (sb->s_feature_incompat & htobe32(JBD2_FEATURE_INCOMPAT_ASYNC_COMMIT))
@@ -300,10 +307,13 @@ static int journal_init_v2(struct defrag_ctx *disk)
 		disk->journal->flags |= FLAG_JOURNAL_CHECKSUM;
 
 
-	if (max_trans_data > be32toh(sb->s_max_trans_data))
+	if (sb->s_max_trans_data != 0
+	    && max_trans_data > be32toh(sb->s_max_trans_data))
+	{
 		disk->journal->max_trans_blocks = be32toh(sb->s_max_trans_data);
-	else
+	} else {
 		disk->journal->max_trans_blocks = max_trans_data;
+	}
 
 	return 0;
 }

@@ -55,6 +55,7 @@ journal_trans_t *start_transaction(struct defrag_ctx *c)
 	ret->transaction_state = TRANS_ACTIVE;
 	ret->ctx = c;
 	ret->start_block = 0;
+	ret->num_writeout_blocks = 0;
 	ret->next = NULL;
 	if (c->journal->last_transaction)
 		c->journal->last_transaction->next = ret;
@@ -103,6 +104,11 @@ int journal_write_block(journal_trans_t *trans, blk64_t block_nr, void *buffer)
 		}
 		wo_block = wo_block->next;
 	}
+	if (trans->num_writeout_blocks >= trans->ctx->journal->max_trans_blocks)
+	{
+		errno = ENOSPC;
+		return -1;
+	}
 	wo_block = malloc(sizeof(*wo_block) + block_size);
 	if (!wo_block) {
 		fprintf(stderr, "Out of memory allocating journal block\n");
@@ -113,6 +119,7 @@ int journal_write_block(journal_trans_t *trans, blk64_t block_nr, void *buffer)
 	wo_block->block_nr = block_nr;
 	wo_block->next = trans->writeout_blocks;
 	trans->writeout_blocks = wo_block;
+	trans->num_writeout_blocks++;
 	return 0;
 }
 

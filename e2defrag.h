@@ -138,6 +138,7 @@ struct journal_trans {
 	/* The in-journal block at which the transaction starts */
 	__u32 start_block;
 
+	__u32 num_writeout_blocks;
 	int transaction_state;
 };
 
