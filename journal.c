@@ -25,8 +25,33 @@
 #include <unistd.h>
 #include <endian.h>
 #include <assert.h>
+#include <sys/mman.h>
 #include "e2defrag.h"
 #include "jbd2.h"
+
+struct journal_trans {
+	struct journal_trans *next;
+	struct defrag_ctx *ctx;
+	struct writeout_block {
+		struct writeout_block *next;
+		blk64_t block_nr;
+		unsigned data[];
+	} *writeout_blocks;
+	/* A protected extent is one which must not be changed before this
+	 * transaction has been comitted.
+	 */
+	struct protected_extent {
+		struct protected_extent *next;
+		blk64_t start_block;
+		blk64_t end_block;
+	} *protected_extents;
+	
+	/* The in-journal block at which the transaction starts */
+	__u32 start_block;
+
+	__u32 num_writeout_blocks;
+	int transaction_state;
+};
 
 struct journal_trans no_journal_trans = {
 	.ctx = NULL,
@@ -48,6 +73,7 @@ journal_trans_t *start_transaction(struct defrag_ctx *c)
 	ret = malloc(sizeof(struct journal_trans));
 	if (!ret) {
 		fprintf(stderr, "Out of memory allocating transaction\n");
+		errno = ENOMEM;
 		return NULL;
 	}
 	ret->writeout_blocks = NULL;
@@ -68,7 +94,8 @@ journal_trans_t *start_transaction(struct defrag_ctx *c)
 /* Mark the given transaction as closed (i.e. no new blocks can be added) */
 void finish_transaction(journal_trans_t *trans)
 {
-	trans->transaction_state = TRANS_CLOSED;
+	if (trans != &no_journal_trans)
+		trans->transaction_state = TRANS_CLOSED;
 }
 
 /* Free the finished transaction */
@@ -152,6 +179,23 @@ int journal_protect_blocks(journal_trans_t *trans, blk64_t start_block,
 	new_extent->next = trans->protected_extents;
 	trans->protected_extents = new_extent;
 	return 0;
+}
+
+/* Mark all blocks in the allocation  as protected (i.e. make sure no other
+ * write modifies them before the transaction is flushed to the journal.
+ */
+int journal_protect_alloc(journal_trans_t *t, struct allocation *alloc)
+{
+	struct data_extent *extent;
+	int i, ret = 0;
+	for (i = 0, extent = alloc->extents;
+	     i < alloc->extent_count && !ret;
+	     extent = &alloc->extents[++i])
+	{
+		ret = journal_protect_blocks(t, extent->start_block,
+		                             extent->end_block);
+	}
+	return ret;
 }
 
 /* Increment the tail of the journal by one block, properly wrapping around
@@ -387,8 +431,7 @@ int journal_flush_upto(struct defrag_ctx *c, struct journal_trans *trans)
 			if (ret < 0)
 				return ret;
 		}
-		current = current->next;
-	} while (current && current != trans);
+	} while (current != trans && (current = current->next));
 	return 0;
 }
 
@@ -455,6 +498,128 @@ int close_journal(struct defrag_ctx *c)
 	ret = sync_disk(c); /* Clear any nonactive transactions */
 	if (ret)
 		return ret;
+	ret = sync_journal(c); /* Clear journal's sequence nr */
+	if (ret)
+		return ret;
 	assert(!c->journal->transactions);
 	return 0;
+}
+
+_Bool journal_try_read_block(struct defrag_ctx *c, void *buf, blk64_t block_nr)
+{
+	struct journal_trans *trans;
+	_Bool ret = 0;
+	if (!c->journal)
+		return 0;
+	trans = c->journal->transactions;
+	while (trans) {
+		struct writeout_block *block = trans->writeout_blocks;
+		while (block) {
+			if (block->block_nr == block_nr) {
+				size_t blk_size = EXT2_BLOCK_SIZE(&c->sb);
+				memcpy(buf, block->data, blk_size);
+				ret = 1;
+				break;
+			}
+			block = block->next;
+		}
+		trans = trans->next;
+	}
+	return ret;
+}
+
+/* Sync all flushed transactions to the journal */
+int sync_journal(struct defrag_ctx *disk)
+{
+	char *base = disk->journal->map;
+	struct journal_superblock_s *sb;
+	struct journal_trans *trans;
+	int tmp;
+	base -= disk->journal->map_offset;
+	sb = (void *)disk->journal->map;
+	if (disk->journal->transactions
+	    && disk->journal->transactions->transaction_state >= TRANS_FLUSHED)
+	{
+		struct journal_trans *trans;
+		struct journal_header_s *hdr;
+		trans = disk->journal->transactions;
+		sb->s_start = htobe32(trans->start_block);
+		hdr = (void *)((char *)disk->journal->map
+		              + disk->journal->blocksize * trans->start_block);
+		sb->s_sequence = hdr->h_sequence;
+	} else {
+		sb->s_start = 0;
+	}
+	if (!disk->journal->journal_alloc) {
+		tmp = msync(base,
+		            disk->journal->size + disk->journal->map_offset,
+		            MS_SYNC);
+		if (tmp < 0) {
+			tmp = errno;
+			fprintf(stderr, "Error sync'ing journal: %s\n",
+			        strerror(tmp));
+			errno = tmp;
+			return -1;
+		}
+	} else {
+		struct allocation *alloc = disk->journal->journal_alloc;
+		int i;
+		for (i = 0; i < alloc->extent_count; i++) {
+			size_t size;
+			off_t offset;
+			size = alloc->extents[i].end_block
+			       - alloc->extents[i].start_block + 1;
+			size *= EXT2_BLOCK_SIZE(&disk->sb);
+			offset = alloc->extents[i].start_block;
+			offset *= EXT2_BLOCK_SIZE(&disk->sb);
+			tmp = pwrite(disk->fd, base, size, offset);
+			if (tmp < 0) {
+				tmp = errno;
+				fprintf(stderr, "Error writing journal: %s\n",
+				        strerror(tmp));
+				errno = tmp;
+				return -1;
+			}
+			base += size;
+		}
+	}
+	tmp = fsync(disk->fd); /* fdatasync is probably better here */
+	if (tmp < 0) {
+		tmp = errno;
+		fprintf(stderr, "Error sync'ing journal: %s\n",
+		        strerror(tmp));
+		errno = tmp;
+		return -1;
+	}
+	trans = disk->journal->transactions;
+	return 0;
+}
+
+void journal_mark_synced(struct defrag_ctx *c)
+{
+	struct journal_trans *trans;
+	if (c->journal) {
+		trans = c->journal->transactions;
+		while (trans && trans->transaction_state == TRANS_DONE)
+		{
+			ptrdiff_t offset;
+			c->journal->transactions = trans->next;
+			free_transaction(trans);
+			trans = c->journal->transactions;
+			if (trans && trans->start_block) {
+				offset = trans->start_block;
+				offset *= c->journal->blocksize;
+			} else {
+				offset = c->journal->blocksize;
+				c->journal->tail = c->journal->map;
+				c->journal->tail += offset;
+			}
+			c->journal->head = (char *)c->journal->map + offset;
+		}
+		while (trans) {
+			if (trans->transaction_state == TRANS_CLOSED)
+				trans->transaction_state = TRANS_DSYNC;
+			trans = trans->next;
+		}
+	}
 }

@@ -110,12 +110,16 @@ static int is_fragmented(struct defrag_ctx *c, struct allocation *alloc)
 	return 1;
 }
 
+/* Try to move the given extent to a new location, in a free extent smaller
+ * than the away_from extent
+ */
 static int try_pack_extent(struct defrag_ctx *c, struct data_extent *data,
                            struct free_extent *away_from)
 {
 	struct free_extent *target;
 	struct allocation *new_alloc;
 	struct data_extent *before;
+	journal_trans_t *trans;
 	blk64_t new_start;
 	e2_blkcnt_t min_size, max_size;
 	int ret;
@@ -166,15 +170,18 @@ static int try_pack_extent(struct defrag_ctx *c, struct data_extent *data,
 	new_alloc->extents[0].start_logical = data->start_logical;
 	new_alloc->extents[0].inode_nr = data->inode_nr;
 	new_alloc->extents[0].uninit = data->uninit;
-	ret = allocate(c, new_alloc);
+	trans = start_transaction(c);
+	ret = allocate(c, new_alloc, trans);
 	if (ret) {
+		finish_transaction(trans);
 		free(new_alloc);
 		return -1;
 	}
 	if (is_metadata(c, data))
-		ret = move_metadata_extent(c, data, new_alloc);
+		ret = move_metadata_extent(c, data, new_alloc, trans);
 	else
-		ret = move_data_extent(c, data, new_alloc);
+		ret = move_data_extent(c, data, new_alloc, trans);
+	finish_transaction(trans);
 	free(new_alloc);
 	return ret;
 }
@@ -322,24 +329,28 @@ int do_one_inode(struct defrag_ctx *c, ext2_ino_t inode_nr)
 			ret = getchar();
 	}
 	if (!global_settings.interactive || answer == 'y' || answer == 'Y') {
-		ret = allocate(c, target);
+		journal_trans_t *transaction;
+		transaction = start_transaction(c);
+		ret = allocate(c, target, transaction);
 		if (ret < 0) {
+			finish_transaction(transaction);
 			free(target);
 			return ret;
 		}
-		ret = copy_data(c, inode->data, &target);
+		ret = copy_data(c, inode->data, &target, transaction);
 		if (!ret) {
 			rb_remove_data_alloc(c, inode->data);
 			insert_data_alloc(c, target);
-			ret = deallocate_blocks(c, inode->data);
+			ret = deallocate_blocks(c, inode->data, transaction);
 			inode->data = target;
 			if (!ret)
-				ret = write_inode_metadata(c, inode);
+				ret = write_inode_metadata(c,inode,transaction);
 			else
-				write_inode_metadata(c, inode);
+				write_inode_metadata(c, inode, transaction);
 		} else {
-			deallocate_blocks(c, target);
+			deallocate_blocks(c, target, transaction);
 		}
+		finish_transaction(transaction);
 	}
 	return ret;
 }
@@ -353,6 +364,7 @@ int try_improve_inode(struct defrag_ctx *c, ext2_ino_t inode_nr)
 {
 	struct inode *inode = c->inodes[inode_nr];
 	struct allocation *new_placement, *old_placement, *diff;
+	journal_trans_t *transaction;
 	int ret, i;
 	new_placement = find_impoved_placement(c, inode->data);
 	if (new_placement == inode->data)
@@ -360,29 +372,31 @@ int try_improve_inode(struct defrag_ctx *c, ext2_ino_t inode_nr)
 	diff = alloc_subtract(new_placement, inode->data);
 	if (!diff)
 		goto out_readd;
-	ret = allocate(c, diff);
+	transaction = start_transaction(c);
+	if (!transaction)
+		goto out_readd;
+	ret = allocate(c, diff, transaction);
 	if (ret < 0)
 		goto out_free;
 	free(diff);
-	ret = copy_data(c, inode->data, &new_placement);
+	ret = copy_data(c, inode->data, &new_placement, transaction);
 	if (ret < 0)
-		goto out_free;
-	ret = fdatasync(c->fd);
-	if (ret)
 		goto out_free;
 	rb_remove_data_alloc(c, inode->data);
 	old_placement = inode->data;
 	inode->data = new_placement;
 	insert_data_alloc(c, inode->data);
 	for (i = 0; i < inode->data->extent_count; i++) {
-		ret = write_extent_metadata(c, &new_placement->extents[i]);
+		ret = write_extent_metadata(c, &new_placement->extents[i],
+		                            transaction);
 		if (ret) {
 			inode->data = old_placement;
 			goto out_readd;
 		}
 	}
 	diff = alloc_subtract(old_placement, new_placement);
-	deallocate_blocks(c, diff);
+	deallocate_blocks(c, diff, transaction);
+	finish_transaction(transaction);
 	free(old_placement);
 	if (inode->data->extent_count > 1)
 		return 1;
@@ -392,6 +406,7 @@ out_readd:
 	for (i = 0; i < inode->data->extent_count; i++)
 		insert_data_extent(c, &inode->data->extents[i]);
 out_free:
+	finish_transaction(transaction);
 	free(new_placement);
 	return ret;
 }
@@ -425,9 +440,18 @@ int do_whole_disk(struct defrag_ctx *c)
 			if (inode->metadata &&
 			    is_fragmented(c, inode->metadata))
 			{
-				ret = write_inode_metadata(c, inode);
-				if (ret < 0)
+				journal_trans_t *t;
+				int tmp_errno;
+				t = start_transaction(c);
+				if (!t)
+					return -1;
+				ret = write_inode_metadata(c, inode, t);
+				tmp_errno = errno;
+				finish_transaction(t);
+				if (ret < 0) {
+					errno = tmp_errno;
 					return ret;
+				}
 				changed = 1;
 				/* TODO: Too coupled with the algorithm.
 				   Will break on improved algorithm later.

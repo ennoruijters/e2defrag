@@ -240,8 +240,20 @@ static int write_tind_metadata(struct defrag_ctx *c, struct data_extent *e,
 	return 0;
 }
 
-static int write_direct_mapping(struct defrag_ctx *c, struct data_extent *e)
+static int write_direct_mapping(struct defrag_ctx *c, struct data_extent *e,
+                                journal_trans_t *trans)
 {
+	/* Transaction safety note: The new indirect blocks do not need to
+	 * be in a transaction, because the ordering guarantee ensures they
+	 * will be on-disk before the inode points to them. Because the
+	 * metadata blocks are included in the data allocation, they also
+	 * do not need to be protected from other transactions overwriting
+	 * them.
+	 *
+	 * We don't need to journal_ensure_unprotected on the new blocks,
+	 * because they are part of the data allocation (so whoever put them
+	 * there should have ensured they are not protected).
+	 */
 	struct inode *inode = c->inodes[e->inode_nr];
 	__u32 cur_block = e->start_block;
 	__u32 cur_logical = e->start_logical;
@@ -326,7 +338,7 @@ static int write_direct_mapping(struct defrag_ctx *c, struct data_extent *e)
 
 out:
 	if (sync_inode)
-		return write_inode(c, e->inode_nr);
+		return write_inode(c, e->inode_nr, trans);
 	return 0;
 }
 
@@ -397,7 +409,7 @@ static e2_blkcnt_t calc_num_indexes(struct defrag_ctx *c, e2_blkcnt_t nextents)
 
 static int update_metadata_move(struct defrag_ctx *c, struct inode *inode,
                                 blk64_t from, blk64_t to, __u32 logical,
-				blk64_t at_block)
+				blk64_t at_block, journal_trans_t *transaction)
 {
 	int ret = 0;
 	struct ext3_extent_header *header;
@@ -426,7 +438,7 @@ static int update_metadata_move(struct defrag_ctx *c, struct inode *inode,
 		if (idx + 1 > EXT_LAST_INDEX(header) ||
 		    (idx + 1)->ei_block > logical) {
 			ret = update_metadata_move(c, inode, from, to, logical,
-			                           EI_BLOCK(idx));
+			                           EI_BLOCK(idx), transaction);
 			goto out_noupdate;
 		}
 	}
@@ -435,12 +447,12 @@ static int update_metadata_move(struct defrag_ctx *c, struct inode *inode,
 
 out_update:
 	if (at_block) {
-		ret = write_block(c, header, at_block);
+		ret = journal_write_block(transaction, at_block, header);
 	} else {
 		ext2_ino_t inode_nr;
 		/* I think it's safe to assume this inode has data */
 		inode_nr = inode->data->extents[0].inode_nr;
-		ret = write_inode(c, inode_nr);
+		ret = write_inode(c, inode_nr, transaction);
 	}
 out_noupdate:
 	if (at_block)
@@ -449,7 +461,7 @@ out_noupdate:
 }
 
 static int move_metadata_block(struct defrag_ctx *c, struct inode *inode,
-                               blk64_t from, blk64_t to)
+                               blk64_t from, blk64_t to, journal_trans_t *t)
 {
 	struct ext3_extent_header *header = malloc(EXT2_BLOCK_SIZE(&c->sb));
 	/* Whether it's a leaf or an index doesn't matter for the logical
@@ -461,12 +473,12 @@ static int move_metadata_block(struct defrag_ctx *c, struct inode *inode,
 	ret = read_block(c, header, from);
 	if (ret)
 		goto out_error;
-	ret = write_block(c, header, to);
+	ret = journal_write_block(t, to, header);
 	if (ret)
 		goto out_error;
 	logical_block = extents->ee_block;
 	free(header);
-	return update_metadata_move(c, inode, from, to, logical_block, 0);
+	return update_metadata_move(c, inode, from, to, logical_block, 0, t);
 
 out_error:
 	free(header);
@@ -474,7 +486,7 @@ out_error:
 }
 
 int move_metadata_extent(struct defrag_ctx *c, struct data_extent *extent,
-                         struct allocation *target)
+                         struct allocation *target, journal_trans_t *trans)
 {
 	struct inode *inode = c->inodes[extent->inode_nr];
 	blk64_t target_block, i;
@@ -491,12 +503,13 @@ int move_metadata_extent(struct defrag_ctx *c, struct data_extent *extent,
 	}
 	target_block = target->extents[0].start_block;
 	for (i = extent->start_block; i != extent->end_block + 1; i++) {
-		ret = move_metadata_block(c, inode, i, target_block);
+		ret = move_metadata_block(c, inode, i, target_block, trans);
 		if (ret)
 			return ret;
 	}
 	ret = deallocate_space(c, extent->start_block,
-	                       extent->end_block - extent->start_block + 1);
+	                       extent->end_block - extent->start_block + 1,
+	                       trans);
 	extent->end_block -= extent->start_block;
 	extent->start_block = target->extents[0].start_block;
 	extent->end_block += extent->start_block;
@@ -524,15 +537,16 @@ static int write_extent_block(struct defrag_ctx *c, blk64_t block,
 	header->eh_generation = 0;
 	header->eh_depth = depth;
 	memcpy(extents, data, header->eh_entries * sizeof(struct ext3_extent));
-	ret = write_block(c, header, block);
+	ret = journal_ensure_unprotected(c, block, block);
+	if (!ret)
+		ret = write_block(c, header, block);
 	if (ret >= 0) {
 		EI_LEAF_SET(extents, block);
 		extents->ei_block = data->ee_block;
 		extents->ei_unused = 0;
 		obstack_grow(index_mempool, extents, sizeof(*extents));
-	}
-	if (ret >= 0)
 		ret = header->eh_entries;
+	}
 	free(header);
 	return ret;
 }
@@ -595,7 +609,7 @@ static void update_inode_extents(struct inode *inode,
 }
 
 int update_inode_block_count(struct defrag_ctx *c, struct inode *inode,
-                             struct allocation *new)
+                             struct allocation *new, journal_trans_t *trans)
 {
 	e2_blkcnt_t old_num_blocks, new_num_blocks;
 	ext2_ino_t inode_nr;
@@ -616,10 +630,11 @@ int update_inode_block_count(struct defrag_ctx *c, struct inode *inode,
 	new_num_blocks = new->block_count * EXT2_BLOCK_SIZE(&c->sb) / 512;
 	on_disk->i_blocks -= old_num_blocks;
 	on_disk->i_blocks += new_num_blocks;
-	return write_inode(c, inode->data->extents[0].inode_nr);
+	return write_inode(c, inode->data->extents[0].inode_nr, trans);
 }
 
-int write_extent_mapping(struct defrag_ctx *c, struct inode *inode)
+int write_extent_mapping(struct defrag_ctx *c, struct inode *inode,
+                         journal_trans_t *trans)
 {
 	struct obstack mempool;
 	struct ext3_extent *leaves;
@@ -627,6 +642,12 @@ int write_extent_mapping(struct defrag_ctx *c, struct inode *inode)
 	e2_blkcnt_t num_extents, num_indexes, num_blocks;
 	int i, ret, depth = 0;
 
+	/* Make sure no other transaction yanks the old metadata out before
+	 * the new metadata is in place
+	 */
+	ret = journal_protect_alloc(trans, inode->metadata);
+	if (ret)
+		return ret;
 	obstack_init(&mempool);
 	for (i = 0; i < inode->data->extent_count; i++)
 		extent_to_ext3_extent(inode,inode->data->extents + i, &mempool);
@@ -641,14 +662,17 @@ int write_extent_mapping(struct defrag_ctx *c, struct inode *inode)
 		new_metadata_blocks = get_blocks(c, num_blocks, inode_nr, 0);
 		if (new_metadata_blocks == NULL)
 			return -1;
-		ret = allocate(c, new_metadata_blocks);
+		ret = allocate(c, new_metadata_blocks, trans);
 		if (ret < 0)
 			return -1;
 		assert(depth == 0);
+		/* The new extent blocks don't need journal protection, as they
+		 * are protected by the data-metadata ordering guarantee.
+		 */
 		ret = writeout_extents(c, leaves, new_metadata_blocks,
 		                       num_extents, &depth, &mempool);
 		if (ret < 0) {
-			deallocate_blocks(c, new_metadata_blocks);
+			deallocate_blocks(c, new_metadata_blocks, trans);
 			goto error_out;
 		}
 		num_extents = obstack_object_size(&mempool) / sizeof(*leaves);
@@ -662,19 +686,18 @@ int write_extent_mapping(struct defrag_ctx *c, struct inode *inode)
 		new_metadata_blocks->block_count = 0;
 		new_metadata_blocks->extent_count = 0;
 	}
-	fdatasync(c->fd);
 	update_inode_extents(inode, leaves, num_extents, depth);
-	ret = write_inode(c, inode->data->extents[0].inode_nr);
+	ret = write_inode(c, inode->data->extents[0].inode_nr, trans);
 	if (ret < 0) {
 		if (new_metadata_blocks)
-			deallocate_blocks(c, new_metadata_blocks);
+			deallocate_blocks(c, new_metadata_blocks, trans);
 		goto error_out;
 	}
-	if (update_inode_block_count(c, inode, new_metadata_blocks) < 0)
+	if (update_inode_block_count(c, inode, new_metadata_blocks, trans) < 0)
 		goto error_out;
 	if (inode->metadata) {
 		rb_remove_data_alloc(c, inode->metadata);
-		deallocate_blocks(c, inode->metadata);
+		deallocate_blocks(c, inode->metadata, trans);
 	}
 	if (new_metadata_blocks)
 		insert_data_alloc(c, new_metadata_blocks);
@@ -686,25 +709,29 @@ error_out:
 	return ret;
 }
 
-int write_extent_metadata(struct defrag_ctx *c, struct data_extent *e)
+int write_extent_metadata(struct defrag_ctx *c, struct data_extent *e,
+                          journal_trans_t *trans)
 {
 	struct inode *inode = c->inodes[e->inode_nr];
 
 	if (inode->metadata) { /* TODO: possibly redundant check, remove? */
-		return write_extent_mapping(c, inode);
+		return write_extent_mapping(c, inode, trans);
 	} else {
-		return write_direct_mapping(c, e);
+		return write_direct_mapping(c, e, trans);
 	}
 }
 
-int write_inode_metadata(struct defrag_ctx *c, struct inode *inode)
+int write_inode_metadata(struct defrag_ctx *c, struct inode *inode,
+                         journal_trans_t *t)
 {
 	if (inode->metadata) {
-		return write_extent_mapping(c, inode);
+		return write_extent_mapping(c, inode, t);
 	} else {
 		int i, ret = 0;
-		for (i = 0; i < inode->data->extent_count && !ret; i++)
-			ret = write_direct_mapping(c, &inode->data->extents[i]);
+		for (i = 0; i < inode->data->extent_count && !ret; i++) {
+			ret = write_direct_mapping(c, &inode->data->extents[i],
+			                           t);
+		}
 		return ret;
 	}
 }

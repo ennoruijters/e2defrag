@@ -69,7 +69,7 @@ static __u32 __mark_single_block(struct defrag_ctx *c, blk64_t block, char mark)
 }
 
 static int mark_blocks(struct defrag_ctx *c, blk64_t first_block,
-                       e2_blkcnt_t count, char mark)
+                       e2_blkcnt_t count, char mark, journal_trans_t *t)
 {
 	__u32 to_sync = 0;
 	int ret, byte_mask = mark ? UCHAR_MAX : 0;
@@ -79,9 +79,9 @@ static int mark_blocks(struct defrag_ctx *c, blk64_t first_block,
 		__u32 tmp;
 		tmp = __mark_single_block(c, first_block, mark);
 		if (tmp != to_sync && need_sync) {
-			ret = write_bitmap_block(c, to_sync);
+			ret = write_bitmap_block(c, to_sync, t);
 			if (!ret)
-				ret = write_gd(c, to_sync);
+				ret = write_gd(c, to_sync, t);
 			if (ret)
 				return ret;
 		}
@@ -128,9 +128,9 @@ static int mark_blocks(struct defrag_ctx *c, blk64_t first_block,
 		n /= CHAR_BIT;
 		memset(c->bitmap + offset, byte_mask, n);
 		if (block_group != to_sync && need_sync) {
-			ret = write_bitmap_block(c, to_sync);
+			ret = write_bitmap_block(c, to_sync, t);
 			if (!ret)
-				ret = write_gd(c, to_sync);
+				ret = write_gd(c, to_sync, t);
 			if (ret)
 				return ret;
 		}
@@ -143,9 +143,9 @@ static int mark_blocks(struct defrag_ctx *c, blk64_t first_block,
 		__u32 tmp;
 		tmp = __mark_single_block(c, first_block, mark);
 		if (tmp != to_sync && need_sync) {
-			ret = write_bitmap_block(c, to_sync);
+			ret = write_bitmap_block(c, to_sync, t);
 			if (!ret)
-				ret = write_gd(c, to_sync);
+				ret = write_gd(c, to_sync, t);
 			if (ret)
 				return ret;
 		}
@@ -155,9 +155,9 @@ static int mark_blocks(struct defrag_ctx *c, blk64_t first_block,
 		count--;
 	}
 	if (need_sync) {
-		ret = write_bitmap_block(c, to_sync);
+		ret = write_bitmap_block(c, to_sync, t);
 		if (!ret)
-			ret = write_gd(c, to_sync);
+			ret = write_gd(c, to_sync, t);
 		if (ret)
 			return ret;
 	}
@@ -165,13 +165,13 @@ static int mark_blocks(struct defrag_ctx *c, blk64_t first_block,
 }
 
 void mark_blocks_used(struct defrag_ctx *c, blk64_t first_block,
-                      e2_blkcnt_t count)
+                      e2_blkcnt_t count, journal_trans_t *t)
 {
-	mark_blocks(c, first_block, count, 1);
+	mark_blocks(c, first_block, count, 1, t);
 }
 
 void mark_blocks_unused(struct defrag_ctx *c, blk64_t first_block,
-                        e2_blkcnt_t count)
+                        e2_blkcnt_t count, journal_trans_t *t)
 {
-	mark_blocks(c, first_block, count, 0);
+	mark_blocks(c, first_block, count, 0, t);
 }

@@ -147,7 +147,7 @@ static int __move_block_range(struct defrag_ctx *c, blk64_t from, blk64_t to,
    as the source extent. Target is no longer valid afterwards and must be
    cleaned up by the caller. */
 int move_data_extent(struct defrag_ctx *c, struct data_extent *extent_to_copy,
-                     struct allocation *target)
+                     struct allocation *target, journal_trans_t *t)
 {
 	struct inode *i = c->inodes[extent_to_copy->inode_nr];
 	blk64_t old_start;
@@ -166,23 +166,31 @@ int move_data_extent(struct defrag_ctx *c, struct data_extent *extent_to_copy,
 		return -1;
 	}
 	if (!extent_to_copy->uninit) {
+		blk64_t end_block = extent_to_copy->start_block + blk_cnt - 1;
+		ret = journal_ensure_unprotected(c,
+		                                 target->extents[0].start_block,
+		                                 end_block);
+		if (ret)
+			return ret;
+		ret = journal_protect_blocks(t, extent_to_copy->start_block,
+		                             end_block);
+		if (ret)
+			return ret;
 		ret = __move_block_range(c, extent_to_copy->start_block,
 	                                 target->extents[0].start_block,
 		                         blk_cnt);
 	} else {
 		ret = 0;
 	}
-	if (!ret)
-		ret = fdatasync(c->fd);
 	if (ret)
 		return ret;
 	old_start = extent_to_copy->start_block;
 	rb_remove_data_extent(c, extent_to_copy);
 	*extent_to_copy = target->extents[0];
 	insert_data_extent(c, extent_to_copy);
-	ret = write_extent_metadata(c, extent_to_copy);
+	ret = write_extent_metadata(c, extent_to_copy, t);
 	if (!ret) {
-		ret = deallocate_space(c, old_start, blk_cnt);
+		ret = deallocate_space(c, old_start, blk_cnt, t);
 		if (!ret) {
 			ret = try_extent_merge(c, i, extent_to_copy);
 			if (!ret) {
@@ -202,7 +210,7 @@ int move_data_extent(struct defrag_ctx *c, struct data_extent *extent_to_copy,
  * This method may realloc *ret_target should an extent need to be split.
  */
 int copy_data(struct defrag_ctx *c, struct allocation *from,
-              struct allocation **ret_target)
+              struct allocation **ret_target, journal_trans_t *t)
 {
 	struct data_extent *from_extent, *to_extent;
 	struct allocation *target;
@@ -254,6 +262,14 @@ int copy_data(struct defrag_ctx *c, struct allocation *from,
 			num_blocks = to_extent->end_block - cur_dest + 1;
 
 		if (!to_extent->uninit && cur_from != cur_dest) {
+			blk64_t end_blk = cur_from + num_blocks - 1;
+			ret = journal_ensure_unprotected(c, cur_from, end_blk);
+			if (ret)
+				return ret;
+			end_blk = cur_dest + num_blocks - 1;
+			ret = journal_protect_blocks(t, cur_dest, end_blk);
+			if (ret)
+				return ret;
 			ret = __move_block_range(c, cur_from, cur_dest,
 			                                            num_blocks);
 			if (ret)

@@ -36,6 +36,9 @@ int read_block(struct defrag_ctx *c, void *buf, blk64_t block)
 {
 	ssize_t ret;
 	off_t offset;
+	ret = journal_try_read_block(c, buf, block);
+	if (ret)
+		return 0;
 	offset = block * EXT2_BLOCK_SIZE(&c->sb);
 	ret = pread(c->fd, buf, EXT2_BLOCK_SIZE(&c->sb), offset);
 	if (ret < EXT2_BLOCK_SIZE(&c->sb))
@@ -56,14 +59,15 @@ int write_block(struct defrag_ctx *c, void *buf, blk64_t block)
 	return 0;
 }
 
-int write_inode(struct defrag_ctx *c, ext2_ino_t inode_nr)
+int write_inode(struct defrag_ctx *c, ext2_ino_t inode_nr, journal_trans_t *t)
 {
 	struct ext2_group_desc *gd;
 	char *block_start;
 	off_t block;
 	int group_nr;
+	inode_nr = inode_nr - 1;
 	block_start = c->inode_map_start;
-	block = (inode_nr - 1) * EXT2_INODE_SIZE(&c->sb);
+	block = inode_nr * EXT2_INODE_SIZE(&c->sb);
 	block -= block % EXT2_BLOCK_SIZE(&c->sb);
 	block_start += block;
 	group_nr = inode_nr / EXT2_INODES_PER_GROUP(&c->sb);
@@ -71,10 +75,10 @@ int write_inode(struct defrag_ctx *c, ext2_ino_t inode_nr)
 	block = gd->bg_inode_table;
 	inode_nr = inode_nr % EXT2_INODES_PER_GROUP(&c->sb);
 	block += inode_nr / EXT2_INODES_PER_BLOCK(&c->sb);
-	return write_block(c, block_start, block);
+	return journal_write_block(t, block, block_start);
 }
 
-int write_bitmap_block(struct defrag_ctx *c, __u32 group_nr)
+int write_bitmap_block(struct defrag_ctx *c, __u32 group_nr, journal_trans_t *t)
 {
 	struct ext2_group_desc *gd;
 	unsigned char *block_start;
@@ -82,10 +86,10 @@ int write_bitmap_block(struct defrag_ctx *c, __u32 group_nr)
 	block_start = c->bitmap + group_nr * EXT2_BLOCK_SIZE(&c->sb);
 	gd = (void *)((char *)(c->gd_map) + group_nr * EXT2_DESC_SIZE(&c->sb));
 	block = gd->bg_block_bitmap;
-	return write_block(c, block_start, block);
+	return journal_write_block(t, block, block_start);
 }
 
-int write_gd(struct defrag_ctx *c, __u32 group_nr)
+int write_gd(struct defrag_ctx *c, __u32 group_nr, journal_trans_t *t)
 {
 	char *gd;
 	blk64_t block_nr;
@@ -97,104 +101,13 @@ int write_gd(struct defrag_ctx *c, __u32 group_nr)
 	offset = group_nr * EXT2_DESC_SIZE(&c->sb);
 	block_nr = (disk_offset + offset) / EXT2_BLOCK_SIZE(&c->sb);
 	gd = c->gd_map + (offset - (offset % EXT2_BLOCK_SIZE(&c->sb)));
-	return write_block(c, gd, block_nr);
-}
-
-/* Sync all flushed transactions to the journal */
-int sync_journal(struct defrag_ctx *disk)
-{
-	char *base = disk->journal->map;
-	struct journal_superblock_s *sb;
-	struct journal_trans *trans;
-	int tmp;
-	base -= disk->journal->map_offset;
-	sb = (void *)disk->journal->map;
-	if (disk->journal->transactions
-	    && disk->journal->transactions->transaction_state >= TRANS_FLUSHED)
-	{
-		struct journal_trans *trans;
-		struct journal_header_s *hdr;
-		trans = disk->journal->transactions;
-		sb->s_start = htobe32(trans->start_block);
-		hdr = (void *)((char *)disk->journal->map
-		              + disk->journal->blocksize * trans->start_block);
-		sb->s_sequence = hdr->h_sequence;
-	} else {
-		sb->s_start = 0;
-	}
-	if (!disk->journal->journal_alloc) {
-		tmp = msync(base,
-		            disk->journal->size + disk->journal->map_offset,
-		            MS_SYNC);
-		if (tmp < 0) {
-			tmp = errno;
-			fprintf(stderr, "Error sync'ing journal: %s\n",
-			        strerror(tmp));
-			errno = tmp;
-			return -1;
-		}
-	} else {
-		struct allocation *alloc = disk->journal->journal_alloc;
-		int i;
-		for (i = 0; i < alloc->extent_count; i++) {
-			size_t size;
-			off_t offset;
-			size = alloc->extents[i].end_block
-			       - alloc->extents[i].start_block + 1;
-			size *= EXT2_BLOCK_SIZE(&disk->sb);
-			offset = alloc->extents[i].start_block;
-			offset *= EXT2_BLOCK_SIZE(&disk->sb);
-			tmp = pwrite(disk->fd, base, size, offset);
-			if (tmp < 0) {
-				tmp = errno;
-				fprintf(stderr, "Error writing journal: %s\n",
-				        strerror(tmp));
-				errno = tmp;
-				return -1;
-			}
-			base += size;
-		}
-	}
-	tmp = fsync(disk->fd); /* fdatasync is probably better here */
-	if (tmp < 0) {
-		tmp = errno;
-		fprintf(stderr, "Error sync'ing journal: %s\n",
-		        strerror(tmp));
-		errno = tmp;
-		return -1;
-	}
-	trans = disk->journal->transactions;
-	return 0;
+	return journal_write_block(t, block_nr, gd);
 }
 
 int sync_disk(struct defrag_ctx *c)
 {
 	int ret;
-	struct journal_trans *trans;
-	if (c->journal) {
-		trans = c->journal->transactions;
-		while (trans && trans->transaction_state == TRANS_DONE)
-		{
-			ptrdiff_t offset;
-			c->journal->transactions = trans->next;
-			free_transaction(trans);
-			trans = c->journal->transactions;
-			if (trans && trans->start_block) {
-				offset = trans->start_block;
-				offset *= c->journal->blocksize;
-			} else {
-				offset = c->journal->blocksize;
-				c->journal->tail = c->journal->map;
-				c->journal->tail += offset;
-			}
-			c->journal->head = (char *)c->journal->map + offset;
-		}
-		while (trans) {
-			if (trans->transaction_state == TRANS_CLOSED)
-				trans->transaction_state = TRANS_DSYNC;
-			trans = trans->next;
-		}
-	}
+	journal_mark_synced(c);
 	ret = fsync(c->fd);
 	return ret;
 }

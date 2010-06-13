@@ -118,29 +118,7 @@ struct inode {
  */
 #define TRANS_DONE	5 /* Metadata written to disk, waiting for sync */
 
-struct journal_trans {
-	struct journal_trans *next;
-	struct defrag_ctx *ctx;
-	struct writeout_block {
-		struct writeout_block *next;
-		blk64_t block_nr;
-		unsigned data[];
-	} *writeout_blocks;
-	/* A protected extent is one which must not be changed before this
-	 * transaction has been comitted.
-	 */
-	struct protected_extent {
-		struct protected_extent *next;
-		blk64_t start_block;
-		blk64_t end_block;
-	} *protected_extents;
-	
-	/* The in-journal block at which the transaction starts */
-	__u32 start_block;
-
-	__u32 num_writeout_blocks;
-	int transaction_state;
-};
+struct journal_trans;
 
 typedef struct journal_trans journal_trans_t;
 
@@ -198,25 +176,27 @@ struct allocation *split_extent(struct allocation *alloc,
 
 /* bitmap.c */
 void mark_blocks_unused(struct defrag_ctx *c, blk64_t first_block,
-                        e2_blkcnt_t count);
+                        e2_blkcnt_t count, journal_trans_t *t);
 void mark_blocks_used(struct defrag_ctx *c, blk64_t first_block,
-                      e2_blkcnt_t count);
+                      e2_blkcnt_t count, journal_trans_t *t);
 
 /* bmove.c */
 int move_file_range(struct defrag_ctx *c, ext2_ino_t inode, blk64_t from,
                     e2_blkcnt_t numblocks, blk64_t dest);
 int move_data_extent(struct defrag_ctx *c, struct data_extent *extent_to_copy,
-                     struct allocation *target);
+                     struct allocation *target, journal_trans_t *t);
 int copy_data(struct defrag_ctx *c, struct allocation *from,
-              struct allocation **target);
+              struct allocation **ret_target, journal_trans_t *t);
 
 /* debug.c */
 void dump_trees(struct defrag_ctx *c, int to_dump);
 
 /* freespace.c */
-int deallocate_space(struct defrag_ctx *c, blk64_t start, e2_blkcnt_t num);
-int deallocate_blocks(struct defrag_ctx *c, struct allocation *space);
-int allocate(struct defrag_ctx *c, struct allocation *space);
+int deallocate_space(struct defrag_ctx *c, blk64_t start, e2_blkcnt_t numblocks,
+                     journal_trans_t *trans);
+int deallocate_blocks(struct defrag_ctx *c, struct allocation *space,
+                      journal_trans_t *t);
+int allocate(struct defrag_ctx *, struct allocation *space, journal_trans_t *t);
 struct allocation *get_blocks(struct defrag_ctx *c, e2_blkcnt_t num_blocks,
                               ext2_ino_t inode_nr, blk64_t first_logical);
 struct allocation *get_range_allocation(blk64_t start_block,
@@ -237,12 +217,11 @@ int defrag_file_interactive(struct defrag_ctx *c);
 /* io.c */
 struct defrag_ctx *open_drive(char *filename);
 int read_block(struct defrag_ctx *c, void *buf, blk64_t block);
-int write_inode(struct defrag_ctx *c, ext2_ino_t inode_nr);
-int sync_journal(struct defrag_ctx *disk);
+int write_inode(struct defrag_ctx *c, ext2_ino_t inode_nr, journal_trans_t *t);
 int sync_disk(struct defrag_ctx *c);
 int write_block(struct defrag_ctx *c, void *buf, blk64_t block);
-int write_bitmap_block(struct defrag_ctx *c, __u32 group_nr);
-int write_gd(struct defrag_ctx *c, __u32 group_nr);
+int write_bitmap_block(struct defrag_ctx *, __u32 group_nr, journal_trans_t *t);
+int write_gd(struct defrag_ctx *c, __u32 group_nr, journal_trans_t *t);
 int set_e2_filesystem_data(struct defrag_ctx *c);
 void close_drive(struct defrag_ctx *c);
 
@@ -251,21 +230,28 @@ journal_trans_t *start_transaction(struct defrag_ctx *c);
 void finish_transaction(journal_trans_t *trans);
 void free_transaction(journal_trans_t *trans);
 int journal_write_block(journal_trans_t *trans, blk64_t block_nr, void *buffer);
+int journal_protect_blocks(journal_trans_t *trans, blk64_t start_block,
+                           blk64_t end_block);
+int journal_protect_alloc(journal_trans_t *t, struct allocation *alloc);
 int journal_ensure_unprotected(struct defrag_ctx *c, blk64_t start_block,
                                blk64_t end_block);
 int writeout_trans_data(struct defrag_ctx *c, struct journal_trans *trans);
 int flush_journal(struct defrag_ctx *c);
 int close_journal(struct defrag_ctx *c);
+int sync_journal(struct defrag_ctx *c);
+_Bool journal_try_read_block(struct defrag_ctx *c, void *buf, blk64_t block_nr);
+void journal_mark_synced(struct defrag_ctx *c);
 
 /* journal_init.c */
 int unmap_journal(struct defrag_ctx *disk);
 int journal_init(struct defrag_ctx *disk);
 
 /* metadata_write.c */
-int write_extent_metadata(struct defrag_ctx *c, struct data_extent *e);
+int write_extent_metadata(struct defrag_ctx *c, struct data_extent *e,
+                          journal_trans_t *trans);
 int move_metadata_extent(struct defrag_ctx *c, struct data_extent *extent,
-                         struct allocation *target);
-int write_inode_metadata(struct defrag_ctx *c, struct inode *inode);
+                         struct allocation *target, journal_trans_t *t);
+int write_inode_metadata(struct defrag_ctx *,struct inode *, journal_trans_t *);
 
 /* metadata_read.c */
 long parse_inode(struct defrag_ctx *c, ext2_ino_t inode_nr,

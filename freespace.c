@@ -24,7 +24,8 @@
 #include "extree.h"
 
 static int allocate_space(struct defrag_ctx *c,
-                          blk64_t start, e2_blkcnt_t numblocks)
+                          blk64_t start, e2_blkcnt_t numblocks,
+                          journal_trans_t *trans)
 {
 	struct free_extent *extent;
 	extent = containing_free_extent(c, start);
@@ -56,7 +57,7 @@ static int allocate_space(struct defrag_ctx *c,
 		insert_free_extent(c, extent);
 		insert_free_extent(c, new_extent);
 	}
-	mark_blocks_used(c, start, numblocks);
+	mark_blocks_used(c, start, numblocks, trans);
 	return 0;
 }
 
@@ -86,7 +87,8 @@ static struct free_extent *try_merge(struct defrag_ctx *c,
 	return extent;
 }
 
-int deallocate_space(struct defrag_ctx *c, blk64_t start, e2_blkcnt_t numblocks)
+int deallocate_space(struct defrag_ctx *c, blk64_t start, e2_blkcnt_t numblocks,
+                     journal_trans_t *trans)
 {
 	struct free_extent *extent;
 
@@ -110,12 +112,13 @@ int deallocate_space(struct defrag_ctx *c, blk64_t start, e2_blkcnt_t numblocks)
 		extent->end_block = start + numblocks - 1;
 	}
 	insert_free_extent(c, extent);
-	mark_blocks_unused(c, start, numblocks);
+	mark_blocks_unused(c, start, numblocks, trans);
 	return 0;
 }
 
 /* Note: also frees the allocation, even on errors */
-int deallocate_blocks(struct defrag_ctx *c, struct allocation *space)
+int deallocate_blocks(struct defrag_ctx *c, struct allocation *space,
+                      journal_trans_t *t)
 {
 	int i, ret = 0;
 	for (i = 0; i < space->extent_count; i++) {
@@ -123,10 +126,10 @@ int deallocate_blocks(struct defrag_ctx *c, struct allocation *space)
 		                         - space->extents[i].start_block;
 		if (ret >= 0)
 			ret = deallocate_space(c, space->extents[i].start_block,
-		                               num_blocks);
+		                               num_blocks, t);
 		else
 			deallocate_space(c, space->extents[i].start_block,
-		                         num_blocks);
+		                         num_blocks, t);
 	}
 	free(space);
 	return ret < 0 ? ret : 0;
@@ -214,7 +217,7 @@ static struct rb_node **simple_allocator(struct defrag_ctx *c,
 	return ret;
 }
 
-int allocate(struct defrag_ctx *c, struct allocation *space)
+int allocate(struct defrag_ctx *c, struct allocation *space, journal_trans_t *t)
 {
 	int i;
 	struct data_extent *extent;
@@ -223,7 +226,7 @@ int allocate(struct defrag_ctx *c, struct allocation *space)
 		int tmp;
 		extent = &space->extents[i];
 		num_blocks = extent->end_block - extent->start_block + 1;
-		tmp = allocate_space(c, extent->start_block, num_blocks);
+		tmp = allocate_space(c, extent->start_block, num_blocks, t);
 		if (tmp < 0)
 			goto out_dealloc;
 	}
@@ -234,7 +237,7 @@ out_dealloc:
 		e2_blkcnt_t num_blocks;
 		extent = &space->extents[i];
 		num_blocks = extent->end_block - extent->start_block + 1;
-		deallocate_space(c, extent->start_block, num_blocks);
+		deallocate_space(c, extent->start_block, num_blocks, t);
 	}
 	return -1;
 }
