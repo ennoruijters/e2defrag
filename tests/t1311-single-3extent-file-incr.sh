@@ -22,7 +22,7 @@
 . ./test-lib.sh
 
 if [ "$1" != "do_test" ]; then
-	test_begin "t1301-single-3-extent-file" "$0"
+	test_begin "t1311-single-3-extent-file-incr" "$0"
 	exit $?;
 fi
 
