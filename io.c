@@ -62,20 +62,42 @@ int write_block(struct defrag_ctx *c, void *buf, blk64_t block)
 int write_inode(struct defrag_ctx *c, ext2_ino_t inode_nr, journal_trans_t *t)
 {
 	struct ext2_group_desc *gd;
-	char *block_start;
+	struct inode *inode;
+	void *buf;
+	struct ext2_inode *ext2_inode;
+	__u64 block_count;
 	off_t block;
-	int group_nr;
+	int group_nr, ret;
+	buf = malloc(EXT2_BLOCK_SIZE(&c->sb));
+	if (!buf)
+		return -1;
+	inode = c->inodes[inode_nr];
+	assert(inode);
 	inode_nr = inode_nr - 1;
-	block_start = c->inode_map_start;
-	block = inode_nr * EXT2_INODE_SIZE(&c->sb);
-	block -= block % EXT2_BLOCK_SIZE(&c->sb);
-	block_start += block;
 	group_nr = inode_nr / EXT2_INODES_PER_GROUP(&c->sb);
 	gd = (void *)((char *)(c->gd_map) + group_nr * EXT2_DESC_SIZE(&c->sb));
 	block = gd->bg_inode_table;
 	inode_nr = inode_nr % EXT2_INODES_PER_GROUP(&c->sb);
 	block += inode_nr / EXT2_INODES_PER_BLOCK(&c->sb);
-	return journal_write_block(t, block, block_start);
+	ret = read_block(c, buf, block);
+	if (ret < 0) {
+		ret = errno;
+		free(buf);
+		errno = ret;
+		return ret;
+	}
+	inode_nr = inode_nr % EXT2_INODES_PER_BLOCK(&c->sb);
+	ext2_inode = (void *)((char *)buf + inode_nr * EXT2_INODE_SIZE(&c->sb));
+	memcpy(&ext2_inode->i_block, &inode->on_disk, sizeof(inode->on_disk));
+	block_count = inode->data->block_count;
+	if (inode->metadata)
+		block_count += inode->metadata->block_count;
+	block_count *= EXT2_BLOCK_SIZE(&c->sb) / 512;
+	ext2_inode->i_blocks = block_count;
+	ext2_inode->osd2.linux2.l_i_blocks_hi = block_count >> 32;
+	ret = journal_write_block(t, block, buf);
+	free(buf);
+	return ret;
 }
 
 int write_bitmap_block(struct defrag_ctx *c, __u32 group_nr, journal_trans_t *t)
@@ -208,12 +230,11 @@ error_out:
 }
 
 long parse_inode_table(struct defrag_ctx *c, blk64_t bitmap_block,
-                       int group_nr)
+                       int group_nr, unsigned char *inode_table)
 {
 	unsigned char *bitmap;
 	off_t bitmap_start_offset, bitmap_delta_offset;
 	size_t bitmap_length;
-	unsigned char *inode_table;
 	long count = 0;
 	const ext2_ino_t first_inode = group_nr * c->sb.s_inodes_per_group;
 	ext2_ino_t i;
@@ -231,15 +252,12 @@ long parse_inode_table(struct defrag_ctx *c, blk64_t bitmap_block,
 		bitmap_length -= (bitmap_length % getpagesize());
 	}
 
+	assert(c->fd);
 	bitmap = mmap(NULL, bitmap_length, PROT_READ | PROT_WRITE, MAP_PRIVATE,
 	              c->fd, bitmap_start_offset);
 	if (bitmap == MAP_FAILED)
 		return -1;
 	bitmap = bitmap + bitmap_delta_offset;
-
-	inode_table = c->inode_map_start;
-	inode_table += group_nr * EXT2_INODE_SIZE(&c->sb)
-	                        * EXT2_INODES_PER_GROUP(&c->sb);
 
 	for (i = 0; i < c->sb.s_inodes_per_group; i++) {
 		if (bitmap[i / CHAR_BIT] == 0) {
@@ -277,7 +295,6 @@ void close_drive(struct defrag_ctx *c)
 		write(c->fd, &c->sb, SUPERBLOCK_SIZE);
 		fsync(c->fd);
 	}
-	free(c->inode_map_start);
 	free(c->bitmap);
 	free(c->gd_map);
 	for (i = 0; i < c->sb.s_inodes_count; i++) {
@@ -447,13 +464,14 @@ long parse_free_bitmap(struct defrag_ctx *c)
 
 int set_e2_filesystem_data(struct defrag_ctx *c)
 {
+	void *inode_map;
 	struct ext2_group_desc *gd;
 	off_t disk_offset;
 	int num_block_groups = (c->sb.s_blocks_count
 	                        + c->sb.s_blocks_per_group - 1)
 	                       / c->sb.s_blocks_per_group;
-	int i_blocks_per_group, i_bytes_per_group;
-	int b_blocks_per_group, b_bytes_per_group;
+	int i_blocks_per_group, b_blocks_per_group;
+	size_t i_bytes_per_group, b_bytes_per_group;
 	int i;
 	gd = (void *)(c->gd_map);
 
@@ -461,8 +479,8 @@ int set_e2_filesystem_data(struct defrag_ctx *c)
 	i_blocks_per_group /= EXT2_INODES_PER_BLOCK(&c->sb);
 	i_bytes_per_group = i_blocks_per_group * EXT2_BLOCK_SIZE(&c->sb);
 
-	c->inode_map_start = malloc(i_bytes_per_group * num_block_groups);
-	if (!c->inode_map_start)
+	inode_map = malloc(i_bytes_per_group);
+	if (!inode_map)
 		return -1;
 
 	b_blocks_per_group = EXT2_BLOCKS_PER_GROUP(&c->sb);
@@ -470,29 +488,31 @@ int set_e2_filesystem_data(struct defrag_ctx *c)
 
 	c->bitmap = malloc(EXT2_BLOCK_SIZE(&c->sb) * num_block_groups);
 	if (!c->bitmap) {
-		free(c->inode_map_start);
+		free(inode_map);
+		errno = ENOMEM;
 		return -1;
 	}
 	for (i = 0; i < num_block_groups; i++) {
 		long ret = 0;
-		size_t offset, bytes_to_read;
-		offset = i_bytes_per_group * i;
+		size_t offset = 0, bytes_to_read;
 		if (gd->bg_flags & EXT2_BG_BLOCK_UNINIT) {
 			ret = add_uninit_bg(c, gd, i);
-			if (ret)
+			if (ret) {
+				ret = errno;
+				free(inode_map);
+				errno = ret;
 				return ret;
+			}
 		}
-		if ((gd->bg_flags & (EXT2_BG_INODE_UNINIT))
-		    || gd->bg_free_inodes_count == c->sb.s_inodes_per_group){
-			memset((char *)(c->inode_map_start) + offset, 0,
-			       i_bytes_per_group);
-		} else {
+		if (!(gd->bg_flags & (EXT2_BG_INODE_UNINIT))
+		    && gd->bg_free_inodes_count != c->sb.s_inodes_per_group)
+		{
 			disk_offset = gd->bg_inode_table;
 			disk_offset *= EXT2_BLOCK_SIZE(&c->sb);
 			bytes_to_read = i_bytes_per_group;
 			while (bytes_to_read) {
 				ret = pread(c->fd,
-				          (char *)(c->inode_map_start) + offset,
+				          (char *)(inode_map) + offset,
 				          bytes_to_read, disk_offset);
 				if (ret <= 0) {
 					ret = errno;
@@ -501,15 +521,17 @@ int set_e2_filesystem_data(struct defrag_ctx *c)
 					fprintf(stderr, "Error reading inode "
 					        "table %d: %s\n", i,
 					        strerror(ret));
+					free(inode_map);
+					free(c->bitmap);
 					errno = ret;
-					free(c->inode_map_start);
 					return -1;
 				}
 				bytes_to_read -= ret;
 				disk_offset += ret;
 				offset += ret;
 			}
-			ret = parse_inode_table(c, gd->bg_inode_bitmap, i);
+			ret = parse_inode_table(c, gd->bg_inode_bitmap, i,
+			                        inode_map);
 			if (ret < 0)
 				return -1;
 		}
@@ -529,7 +551,7 @@ int set_e2_filesystem_data(struct defrag_ctx *c)
 					        "bitmap %d: %s\n", i,
 					        strerror(ret));
 				errno = ret;
-				free(c->inode_map_start);
+				free(inode_map);
 				free(c->bitmap);
 				return -1;
 			}
@@ -539,5 +561,6 @@ int set_e2_filesystem_data(struct defrag_ctx *c)
 		}
 		gd = (void *)((char *)gd + EXT2_DESC_SIZE(&c->sb));
 	}
+	free(inode_map);
 	return parse_free_bitmap(c);
 }

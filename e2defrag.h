@@ -103,7 +103,7 @@ struct inode {
 				struct ext3_extent_idx index;
 			} extent[4];
 		} extents;
-	} *on_disk;
+	} on_disk;
 	struct sparse_extent *sparse;
 	int num_sparse;
 };
@@ -148,7 +148,6 @@ struct defrag_ctx {
 	struct rb_root free_tree_by_block;
 	struct rb_root free_tree_by_size;
 	unsigned char *bitmap;
-	void *inode_map_start;
 	char *gd_map;
 	struct disk_journal *journal;
 	int fd;

@@ -450,7 +450,8 @@ static struct inode *read_inode_extents(struct defrag_ctx *c,
 			goto out_error;
 		ret = make_inode_extents(c, &first_extent, NULL, inode_nr);
 		if (ret) {
-			ret->on_disk = (union on_disk_block *)inode->i_block;
+			memcpy(&ret->on_disk, inode->i_block,
+			       sizeof(ret->on_disk));
 			ret->metadata = malloc(sizeof(*ret->metadata));
 			if (!ret->metadata) {
 				free(ret);
@@ -468,7 +469,8 @@ static struct inode *read_inode_extents(struct defrag_ctx *c,
 		ret = make_inode_extents(c, &first_extent, NULL, inode_nr);
 		if (ret) {
 			e2_blkcnt_t num_extents = 0, i;
-			ret->on_disk = (union on_disk_block *)inode->i_block;
+			memcpy(&ret->on_disk, inode->i_block,
+			       sizeof(ret->on_disk));
 			first_extent.e.start_block = 0;
 			first_extent.e.end_block = 0;
 			first_extent.e.start_logical = 0;
@@ -620,7 +622,7 @@ static struct inode *read_inode_blocks(struct defrag_ctx *c,
 	}
 	ret = make_inode_extents(c, &first_extent, &first_sparse, inode_nr);
 	if (ret)
-		ret->on_disk = (union on_disk_block *)inode->i_block;
+		memcpy(&ret->on_disk, inode->i_block, sizeof(ret->on_disk));
 	obstack_free(&mempool, NULL);
 	return ret;
 }
@@ -641,14 +643,15 @@ long parse_inode(struct defrag_ctx *c, ext2_ino_t inode_nr,
 		c->inodes[inode_nr]->data = malloc(sizeof(struct allocation));
 		if (!c->inodes[inode_nr]->data) {
 			free(c->inodes[inode_nr]);
+			errno = ENOMEM;
 			return -1;
 		}
 		c->inodes[inode_nr]->data->block_count = 0;
 		c->inodes[inode_nr]->data->extent_count = 0;
-		c->inodes[inode_nr]->on_disk =
-			                  (union on_disk_block *)inode->i_block;
 		c->inodes[inode_nr]->metadata = NULL;
 		c->inodes[inode_nr]->num_sparse = 0;
+		memset(&c->inodes[inode_nr]->on_disk, 0,
+		       sizeof(c->inodes[inode_nr]->on_disk));
 		return 0;
 	}
 	if (inode->i_flags - (inode->i_flags & KNOWN_INODE_FLAGS_MASK)) {
@@ -677,25 +680,50 @@ long parse_inode(struct defrag_ctx *c, ext2_ino_t inode_nr,
 
 struct inode *read_inode(struct defrag_ctx *c, ext2_ino_t ino)
 {
-	char *inode_start;
+	struct ext2_group_desc *gd;
+	void *buf;
+	struct inode *ret;
 	struct ext2_inode *inode;
+	blk64_t block;
 	long group_nr;
+	int iret, errno_tmp;
+	buf = malloc(EXT2_BLOCK_SIZE(&c->sb));
+	if (!buf)
+		return NULL;
 	ino -= 1; /* Inodes are indexed from 1 */
 	group_nr = ino / EXT2_INODES_PER_GROUP(&c->sb);
-	inode_start = c->inode_map_start;
-	inode_start += ino * EXT2_INODE_SIZE(&c->sb);
-	inode = (struct ext2_inode *)inode_start;
-	if (inode->i_flags - (inode->i_flags & KNOWN_INODE_FLAGS_MASK)) {
-		printf("Inode %u has unknown flags %x\n",
-		       ino,
-		       inode->i_flags & ~KNOWN_INODE_FLAGS_MASK);
+	gd = (void *)((char *)(c->gd_map) + group_nr * EXT2_DESC_SIZE(&c->sb));
+	block = gd->bg_inode_table;
+	ino = ino % EXT2_INODES_PER_GROUP(&c->sb);
+	block += ino / EXT2_INODES_PER_BLOCK(&c->sb);
+	iret = read_block(c, buf, block);
+	if (iret < 0) {
+		errno_tmp = errno;
+		free(buf);
+		errno = errno_tmp;
 		return NULL;
 	}
+
+	ino = ino % EXT2_INODES_PER_BLOCK(&c->sb);
+	inode = (void *)((char *)buf + ino * EXT2_INODE_SIZE(&c->sb));
+	if (inode->i_flags - (inode->i_flags & KNOWN_INODE_FLAGS_MASK)) {
+		errno_tmp = errno;
+		free(buf);
+		fprintf(stderr, "Inode %u has unknown flags %x\n", ino,
+		        inode->i_flags & ~KNOWN_INODE_FLAGS_MASK);
+		errno = errno_tmp;
+		return NULL;
+	}
+	errno_tmp = 0;
 	if (inode->i_flags & EXT4_EXTENTS_FL) {
-		return read_inode_extents(c, 0, inode);
+		ret = read_inode_extents(c, 0, inode);
 	} else {
 		e2_blkcnt_t blocks;
 		blocks = inode->i_blocks / EXT2_SECTORS_PER_BLOCK(&c->sb);
-		return read_inode_blocks(c, 0, inode, 0);
+		ret = read_inode_blocks(c, 0, inode, 0);
 	}
+	errno_tmp = errno;
+	free(buf);
+	errno = errno_tmp;
+	return ret;
 }

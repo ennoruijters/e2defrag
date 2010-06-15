@@ -268,8 +268,8 @@ static int write_direct_mapping(struct defrag_ctx *c, struct data_extent *e,
 			new_block = cur_block++;
 		else
 			new_block = 0;
-		if (inode->on_disk->i_block[cur_logical] != new_block) {
-			inode->on_disk->i_block[cur_logical] = new_block;
+		if (inode->on_disk.i_block[cur_logical] != new_block) {
+			inode->on_disk.i_block[cur_logical] = new_block;
 			sync_inode = 1;
 		}
 	}
@@ -284,14 +284,14 @@ static int write_direct_mapping(struct defrag_ctx *c, struct data_extent *e,
 			new_block = cur_block++;
 		cur_logical++;
 	} else {
-		new_block = inode->on_disk->i_block[EXT2_IND_BLOCK];
+		new_block = inode->on_disk.i_block[EXT2_IND_BLOCK];
 	}
 	if (cur_logical > EXT2_IND_LBLOCK(&c->sb)
 	    && cur_logical < EXT2_DIND_LBLOCK(&c->sb)) {
 		write_ind_metadata(c, e, new_block, &cur_logical, &cur_block);
 	}
-	if (inode->on_disk->i_block[EXT2_IND_BLOCK] != new_block) {
-		inode->on_disk->i_block[EXT2_IND_BLOCK] = new_block;
+	if (inode->on_disk.i_block[EXT2_IND_BLOCK] != new_block) {
+		inode->on_disk.i_block[EXT2_IND_BLOCK] = new_block;
 		sync_inode = 1;
 	}
 	if (cur_block > e->end_block)
@@ -305,14 +305,14 @@ static int write_direct_mapping(struct defrag_ctx *c, struct data_extent *e,
 			new_block = cur_block++;
 		cur_logical++;
 	} else {
-		new_block = inode->on_disk->i_block[EXT2_DIND_BLOCK];
+		new_block = inode->on_disk.i_block[EXT2_DIND_BLOCK];
 	}
 	if (cur_logical > EXT2_DIND_LBLOCK(&c->sb)
 	    && cur_logical < EXT2_TIND_LBLOCK(&c->sb)) {
 		write_dind_metadata(c, e, new_block, &cur_logical, &cur_block);
 	}
-	if (inode->on_disk->i_block[EXT2_DIND_BLOCK] != new_block) {
-		inode->on_disk->i_block[EXT2_DIND_BLOCK] = new_block;
+	if (inode->on_disk.i_block[EXT2_DIND_BLOCK] != new_block) {
+		inode->on_disk.i_block[EXT2_DIND_BLOCK] = new_block;
 		sync_inode = 1;
 	}
 	if (cur_block > e->end_block)
@@ -326,13 +326,13 @@ static int write_direct_mapping(struct defrag_ctx *c, struct data_extent *e,
 			new_block = cur_block++;
 		cur_logical++;
 	} else {
-		new_block = inode->on_disk->i_block[EXT2_TIND_BLOCK];
+		new_block = inode->on_disk.i_block[EXT2_TIND_BLOCK];
 	}
 	if (cur_logical > EXT2_TIND_LBLOCK(&c->sb)) {
 		write_tind_metadata(c, e, new_block, &cur_logical, &cur_block);
 	}
-	if (inode->on_disk->i_block[EXT2_TIND_BLOCK] != new_block) {
-		inode->on_disk->i_block[EXT2_TIND_BLOCK] = new_block;
+	if (inode->on_disk.i_block[EXT2_TIND_BLOCK] != new_block) {
+		inode->on_disk.i_block[EXT2_TIND_BLOCK] = new_block;
 		sync_inode = 1;
 	}
 
@@ -415,7 +415,7 @@ static int update_metadata_move(struct defrag_ctx *c, struct inode *inode,
 	struct ext3_extent_header *header;
 	struct ext3_extent_idx *idx;
 	if (at_block == 0) {
-		header = &inode->on_disk->extents.hdr;
+		header = &inode->on_disk.extents.hdr;
 	} else {
 		header = malloc(EXT2_BLOCK_SIZE(&c->sb));
 		ret = read_block(c, header, at_block);
@@ -599,38 +599,13 @@ static void update_inode_extents(struct inode *inode,
                                  e2_blkcnt_t num_entries, int depth)
 {
 	assert(num_entries <= 4);
-	inode->on_disk->extents.hdr.eh_magic = EXT3_EXT_MAGIC;
-	inode->on_disk->extents.hdr.eh_entries = num_entries;
-	inode->on_disk->extents.hdr.eh_max = 4;
-	inode->on_disk->extents.hdr.eh_depth = depth;
-	inode->on_disk->extents.hdr.eh_generation = 0;
-	memcpy(inode->on_disk->extents.extent, entries,
+	inode->on_disk.extents.hdr.eh_magic = EXT3_EXT_MAGIC;
+	inode->on_disk.extents.hdr.eh_entries = num_entries;
+	inode->on_disk.extents.hdr.eh_max = 4;
+	inode->on_disk.extents.hdr.eh_depth = depth;
+	inode->on_disk.extents.hdr.eh_generation = 0;
+	memcpy(inode->on_disk.extents.extent, entries,
 	       num_entries * sizeof(struct ext3_extent));
-}
-
-int update_inode_block_count(struct defrag_ctx *c, struct inode *inode,
-                             struct allocation *new, journal_trans_t *trans)
-{
-	e2_blkcnt_t old_num_blocks, new_num_blocks;
-	ext2_ino_t inode_nr;
-	uint32_t group_nr;
-	char *map;
-	struct ext2_inode *on_disk;
-	if (inode->metadata->block_count == new->block_count)
-		return 0;
-	assert(inode->data->extent_count); /* Otherwise why would we be writing
-	                                      metadata? */
-	inode_nr = inode->data->extents[0].inode_nr - 1;
-	group_nr = inode_nr / EXT2_INODES_PER_GROUP(&c->sb);
-	map = c->inode_map_start;
-	map += inode_nr * EXT2_INODE_SIZE(&c->sb);
-	on_disk = (struct ext2_inode *)map;
-	old_num_blocks = inode->metadata->block_count;
-	old_num_blocks *= EXT2_BLOCK_SIZE(&c->sb) / 512;
-	new_num_blocks = new->block_count * EXT2_BLOCK_SIZE(&c->sb) / 512;
-	on_disk->i_blocks -= old_num_blocks;
-	on_disk->i_blocks += new_num_blocks;
-	return write_inode(c, inode->data->extents[0].inode_nr, trans);
 }
 
 int write_extent_mapping(struct defrag_ctx *c, struct inode *inode,
@@ -693,8 +668,10 @@ int write_extent_mapping(struct defrag_ctx *c, struct inode *inode,
 			deallocate_blocks(c, new_metadata_blocks, trans);
 		goto error_out;
 	}
-	if (update_inode_block_count(c, inode, new_metadata_blocks, trans) < 0)
-		goto error_out;
+	if (inode->metadata->block_count != new_metadata_blocks->block_count) {
+		if (write_inode(c, inode->data->extents[0].inode_nr, trans) < 0)
+			goto error_out;
+	}
 	if (inode->metadata) {
 		rb_remove_data_alloc(c, inode->metadata);
 		deallocate_blocks(c, inode->metadata, trans);
