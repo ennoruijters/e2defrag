@@ -47,9 +47,6 @@ extern struct settings global_settings;
 
 #define EXT2_SECTORS_PER_BLOCK(sb) (EXT2_BLOCK_SIZE(sb) / 512)
 
-#define PAGE_START(x) \
-	((void *)(((uintptr_t)(x)) - (((uintptr_t)(x)) % getpagesize())))
-
 static inline e2_blkcnt_t ext2_groups_on_disk(const struct ext2_super_block *sb)
 {
 	e2_blkcnt_t ret = sb->s_blocks_count / sb->s_blocks_per_group;
