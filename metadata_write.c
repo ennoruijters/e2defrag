@@ -613,7 +613,7 @@ int write_extent_mapping(struct defrag_ctx *c, struct inode *inode,
 {
 	struct obstack mempool;
 	struct ext3_extent *leaves;
-	struct allocation *new_metadata_blocks;
+	struct allocation *new_metadata_blocks, *old_metadata;
 	e2_blkcnt_t num_extents, num_indexes, num_blocks;
 	int i, ret, depth = 0;
 
@@ -662,23 +662,30 @@ int write_extent_mapping(struct defrag_ctx *c, struct inode *inode,
 		new_metadata_blocks->extent_count = 0;
 	}
 	update_inode_extents(inode, leaves, num_extents, depth);
+	old_metadata = inode->metadata;
+	inode->metadata = new_metadata_blocks;
+	if (old_metadata->block_count != inode->metadata->block_count) {
+		uint64_t blocks;
+		blocks = le32toh(c->sb.s_free_blocks_count);
+		blocks += le64toh((uint64_t)c->sb.s_free_blocks_hi) << 32;
+		blocks += old_metadata->block_count;
+		blocks -= inode->metadata->block_count;
+		c->sb.s_free_blocks_hi = htole32(blocks >> 32);
+		c->sb.s_free_blocks_count = htole32(blocks);
+	}
 	ret = write_inode(c, inode->data->extents[0].inode_nr, trans);
 	if (ret < 0) {
+		inode->metadata = old_metadata;
 		if (new_metadata_blocks)
 			deallocate_blocks(c, new_metadata_blocks, trans);
 		goto error_out;
 	}
-	if (inode->metadata->block_count != new_metadata_blocks->block_count) {
-		if (write_inode(c, inode->data->extents[0].inode_nr, trans) < 0)
-			goto error_out;
-	}
-	if (inode->metadata) {
-		rb_remove_data_alloc(c, inode->metadata);
-		deallocate_blocks(c, inode->metadata, trans);
+	if (old_metadata) {
+		rb_remove_data_alloc(c, old_metadata);
+		deallocate_blocks(c, old_metadata, trans);
 	}
 	if (new_metadata_blocks)
 		insert_data_alloc(c, new_metadata_blocks);
-	inode->metadata = new_metadata_blocks;
 	ret = 0;
 
 error_out:
