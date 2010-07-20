@@ -199,12 +199,14 @@ struct defrag_ctx *open_drive(char *filename)
 		}
 	}
 	sb.s_state &= ~EXT2_VALID_FS;
-	tmp = lseek(fd, SUPERBLOCK_OFFSET, SEEK_SET);
-	if (tmp < 0)
-		goto error_open;
-	tmp = write(fd, &sb, SUPERBLOCK_SIZE);
-	if (tmp < SUPERBLOCK_SIZE)
-		goto error_open;
+	if (!global_settings.simulate) {
+		tmp = lseek(fd, SUPERBLOCK_OFFSET, SEEK_SET);
+		if (tmp < 0)
+			goto error_open;
+		tmp = write(fd, &sb, SUPERBLOCK_SIZE);
+		if (tmp < SUPERBLOCK_SIZE)
+			goto error_open;
+	}
 
 	ret = calloc(sizeof(struct defrag_ctx)
 	             + sizeof(struct inode *) * sb.s_inodes_count, 1);
