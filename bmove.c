@@ -166,7 +166,7 @@ int move_data_extent(struct defrag_ctx *c, struct data_extent *extent_to_copy,
 		return -1;
 	}
 	if (!extent_to_copy->uninit) {
-		blk64_t end_block = extent_to_copy->start_block + blk_cnt - 1;
+		blk64_t end_block = target->extents[0].start_block + blk_cnt-1;
 		ret = journal_ensure_unprotected(c,
 		                                 target->extents[0].start_block,
 		                                 end_block);
