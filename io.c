@@ -281,7 +281,6 @@ long parse_inode_table(struct defrag_ctx *c, blk64_t bitmap_block,
 		}
 		bitmap[i / CHAR_BIT] >>= 1;
 	}
-	printf("\n");
 	munmap(bitmap - bitmap_delta_offset, bitmap_length);
 	return count;
 }
@@ -561,6 +560,7 @@ int set_e2_filesystem_data(struct defrag_ctx *c)
 		}
 		gd = (void *)((char *)gd + EXT2_DESC_SIZE(&c->sb));
 	}
+	printf("\n");
 	free(inode_map);
 	return parse_free_bitmap(c);
 }
