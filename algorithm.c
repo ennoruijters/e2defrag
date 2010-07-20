@@ -125,8 +125,11 @@ static int try_pack_extent(struct defrag_ctx *c, struct data_extent *data,
 	int ret;
 
 	before = containing_data_extent(c, data->start_block - 1);
-	if (before && before->inode_nr == data->inode_nr)
-		return ENOSPC; /* TODO: proper multi-extent moves */
+	if (before && before->inode_nr == data->inode_nr) {
+		fprintf(stderr, "Multi-extent moves not currently supported, try manually defragmenting inode %u\n", data->inode_nr);
+		errno = ENOTSUP;
+		return ENOTSUP; /* TODO: proper multi-extent moves */
+	}
 	min_size = data->end_block - data->start_block + 1;
 	/* Don't add 1 to max_size (or rather, subtract one from the final
 	   result, so we actually gain something by moving */
