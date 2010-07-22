@@ -62,12 +62,12 @@ int unmap_journal(struct defrag_ctx *disk)
 }
 
 /* Returns 0 for success, positive (errno) for failure */
-static int read_journal(struct defrag_ctx *disk)
+static int read_journal(struct defrag_ctx *disk, struct disk_journal *journal)
 {
-	struct allocation *alloc = disk->journal->journal_alloc;
-	char *base = disk->journal->map;
+	struct allocation *alloc = journal->journal_alloc;
+	char *base = journal->map;
 	int i, tmp;
-	base -= disk->journal->map_offset;
+	base -= journal->map_offset;
 	for (i = 0; i < alloc->extent_count; i++) {
 		size_t size;
 		off_t offset;
@@ -89,13 +89,13 @@ static int read_journal(struct defrag_ctx *disk)
 	return 0;
 }
 
-static int map_journal(struct defrag_ctx *disk)
+static int map_journal(struct defrag_ctx *disk, struct disk_journal *journal)
 {
 	struct inode *ino;
 	char *map;
 	size_t size;
 	int offset_diff, ret_errno;
-	disk->journal->journal_alloc = NULL;
+	journal->journal_alloc = NULL;
        	ino = read_inode(disk, EXT2_JOURNAL_INO);
 	if (ino == NULL) {
 		fprintf(stderr, "Journal inode corrupt\n");
@@ -154,11 +154,11 @@ static int map_journal(struct defrag_ctx *disk)
 			if (data->extents[i].start_block % blocks_per_page
 			    || data->extents[i].end_block % blocks_per_page)
 			{
-				disk->journal->journal_alloc = data;
-				disk->journal->map = map;
-				disk->journal->size = size;
-				disk->journal->map_offset = offset_diff;
-				ret_errno = read_journal(disk);
+				journal->journal_alloc = data;
+				journal->map = map;
+				journal->size = size;
+				journal->map_offset = offset_diff;
+				ret_errno = read_journal(disk, journal);
 				if (ret_errno) {
 					free(ino->data);
 					munmap(map,
@@ -172,11 +172,11 @@ static int map_journal(struct defrag_ctx *disk)
 		 * length doesn't have to be aligned.
 		 */
 		if (data->extents[i].start_block % blocks_per_page) {
-			disk->journal->journal_alloc = data;
-			disk->journal->map = map;
-			disk->journal->size = size;
-			disk->journal->map_offset = offset_diff;
-			ret_errno = read_journal(disk);
+			journal->journal_alloc = data;
+			journal->map = map;
+			journal->size = size;
+			journal->map_offset = offset_diff;
+			ret_errno = read_journal(disk, journal);
 			if (ret_errno) {
 				free(ino->data);
 				munmap(map,
@@ -232,16 +232,16 @@ static int map_journal(struct defrag_ctx *disk)
 		free(ino->data);
 		size = num_blocks * EXT2_BLOCK_SIZE(&disk->sb);
 	}
-	disk->journal->map = map;
-	disk->journal->size = size;
-	disk->journal->map_offset = offset_diff;
+	journal->map = map;
+	journal->size = size;
+	journal->map_offset = offset_diff;
 	ret_errno = 0;
 out_free_inode:
 	free(ino->metadata);
 	free(ino->sparse);
 	free(ino);
 	if (ret_errno)
-		free(disk->journal);
+		free(journal);
 	errno = ret_errno;
 	if (ret_errno)
 		return -1;
@@ -327,15 +327,17 @@ int journal_init(struct defrag_ctx *disk)
 	if (EXT2_HAS_COMPAT_FEATURE(&disk->sb, EXT3_FEATURE_COMPAT_HAS_JOURNAL))
 	{
 		struct journal_superblock_s *sb;
-		disk->journal = malloc(sizeof(*disk->journal));
-		if (!disk->journal) {
+		struct disk_journal *journal;
+		journal = malloc(sizeof(*journal));
+		if (!journal) {
 			fprintf(stderr, "Out of memory reading journal\n");
 			errno = ENOMEM;
 			return -1;
 		}
-		ret = map_journal(disk);
+		ret = map_journal(disk, journal);
 		if (ret)
 			return ret;
+		disk->journal = journal;
 		sb = disk->journal->map;
 		if (be32toh(sb->s_header.h_magic) != JBD2_MAGIC_NUMBER) {
 			fprintf(stderr,
