@@ -522,7 +522,7 @@ static int write_extent_block(struct defrag_ctx *c, blk64_t block,
                               e2_blkcnt_t max_extents, int depth,
                               struct obstack *index_mempool)
 {
-	struct ext3_extent_header *header = malloc(EXT2_BLOCK_SIZE(&c->sb));
+	struct ext3_extent_header *header = calloc(1, EXT2_BLOCK_SIZE(&c->sb));
 	struct ext3_extent_idx *extents = (void *)(header + 1);
 	int ret;
 
