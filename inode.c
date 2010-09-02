@@ -153,28 +153,32 @@ int try_extent_merge(struct defrag_ctx *c,
 
 	while (oldcount != count) {
 		int pos = extent - inode->data->extents;
-		struct data_extent *prev = inode->data->extents + pos - 1;
-		struct data_extent *next = inode->data->extents + pos + 1;
+		struct data_extent *next;
 		oldcount = count;
-		if (pos > 0 && prev->end_block == extent->start_block - 1
-		    && extent->uninit == prev->uninit)
-		{
-			if (!removed_from_tree) {
-				inode_remove_from_trees(c, inode);
-				removed_from_tree = 1;
+		if (pos > 0) {
+			struct data_extent *prev;
+			prev = extent - 1;
+			if (prev->end_block == extent->start_block - 1
+			    && extent->uninit == prev->uninit)
+			{
+				if (!removed_from_tree) {
+					inode_remove_from_trees(c, inode);
+					removed_from_tree = 1;
+				}
+				ret = merge_extents(inode, prev, extent);
+				if (ret < 0) {
+					insert_data_extent(c, prev);
+					break;
+				}
+				count++;
+				extent -= 1;
+				downcount++;
+				pos -= 1;
 			}
-			ret = merge_extents(inode, prev, extent);
-			if (ret < 0) {
-				insert_data_extent(c, prev);
-				break;
-			}
-			count++;
-			extent = prev;
-			downcount++;
-			pos -= 1;
 		}
 
-		if ((pos + 1) < inode->data->extent_count
+		next = extent + 1;
+		if (pos < (inode->data->extent_count - 1)
 		    && extent->end_block == next->start_block - 1
 		    && extent->uninit == next->uninit)
 		{
