@@ -46,8 +46,14 @@ struct journal_trans {
 		blk64_t end_block;
 	} *protected_extents;
 	
-	/* The in-journal block at which the transaction starts */
-	__u32 start_block;
+	union {
+		/* Valid iff transaction_state == TRANS_ACTIVE */
+		struct journal_trans *prev;
+
+		/* Valid iff transaction_state >= TRANS_FLUSHED */
+		/* The in-journal block at which the transaction starts */
+		__u32 start_block;
+	} u;
 
 	__u32 num_writeout_blocks;
 	int transaction_state;
@@ -80,9 +86,9 @@ journal_trans_t *start_transaction(struct defrag_ctx *c)
 	ret->protected_extents = NULL;
 	ret->transaction_state = TRANS_ACTIVE;
 	ret->ctx = c;
-	ret->start_block = 0;
 	ret->num_writeout_blocks = 0;
 	ret->next = NULL;
+	ret->u.prev = c->journal->last_transaction;
 	if (c->journal->last_transaction)
 		c->journal->last_transaction->next = ret;
 	c->journal->last_transaction = ret;
@@ -91,11 +97,113 @@ journal_trans_t *start_transaction(struct defrag_ctx *c)
 	return ret;
 }
 
-/* Mark the given transaction as closed (i.e. no new blocks can be added) */
+static char overlap(uintmax_t s1, uintmax_t e1, uintmax_t s2, uintmax_t e2)
+{
+	if (s1 < s2 && e1 < e2)
+		return 0;
+	if (s2 < s1 && e2 < e1)
+		return 0;
+	return 1;
+}
+
+static void merge_transactions(struct journal_trans *into)
+{
+	struct writeout_block *writeout, *first_into_writeout;
+	struct protected_extent *prot, *first_into_prot;
+	struct journal_trans*from;
+	from = into->next;
+	writeout = from->writeout_blocks;
+	first_into_writeout = into->writeout_blocks;
+	while (writeout) {
+		struct writeout_block *into_writeout;
+		into_writeout = first_into_writeout;
+		while (into_writeout) {
+			if (into_writeout->block_nr == writeout->block_nr) {
+				struct writeout_block *tmp;
+				memcpy(into_writeout->data, writeout->data,
+				       into->ctx->journal->blocksize);
+				tmp = writeout->next;
+				free(writeout);
+				writeout = tmp;
+				break;
+			}
+			into_writeout = into_writeout->next;
+		}
+		if (!into_writeout) {
+			struct writeout_block *tmp;
+			tmp = writeout->next;
+			writeout->next = into->writeout_blocks;
+			into->writeout_blocks = writeout;
+			writeout = tmp;
+			into->num_writeout_blocks++;
+		}
+	}
+	prot = from->protected_extents;
+	first_into_prot = into->protected_extents;
+	while (prot) {
+		struct protected_extent *into_prot;
+		into_prot = first_into_prot;
+		while (into_prot) {
+			blk64_t from_start, from_end, into_start, into_end;
+			from_start = prot->start_block;
+			from_end = prot->end_block;
+			into_start = into_prot->start_block;
+			into_end = into_prot->end_block;
+			if (overlap(from_start, from_end, into_start, into_end))
+			{
+				struct protected_extent *tmp;
+				if (from_start < into_start)
+					into_prot->start_block = from_start;
+				if (from_end > into_end)
+					into_prot->end_block = from_end;
+				tmp = prot->next;
+				free(prot);
+				prot = tmp;
+				break;
+			} else {
+				into_prot = into_prot->next;
+			}
+		}
+		if (!into_prot) {
+			struct protected_extent *tmp;
+			tmp = prot->next;
+			prot->next = into->protected_extents;
+			into->protected_extents = prot;
+			prot = tmp;
+		}
+	}
+	into->next = from->next;
+	if (into->next && into->next->transaction_state == TRANS_ACTIVE)
+		into->next->u.prev = into;
+	if (into->ctx->journal->last_transaction == from)
+		into->ctx->journal->last_transaction = into;
+	free(from);
+}
+
+/* Mark the given transaction as closed (i.e. no new blocks can be added).
+ * Note that this function may call free on trans.
+ */
 void finish_transaction(journal_trans_t *trans)
 {
-	if (trans != &no_journal_trans)
-		trans->transaction_state = TRANS_CLOSED;
+	if (trans == &no_journal_trans)
+		return;
+	assert(trans->transaction_state < TRANS_CLOSED);
+	trans->transaction_state = TRANS_CLOSED;
+	if (trans->u.prev) {
+		struct disk_journal *journal = trans->ctx->journal;
+		uint32_t blocks_left;
+		blocks_left = journal->max_trans_blocks;
+		blocks_left -= trans->num_writeout_blocks;
+		if (blocks_left > trans->u.prev->num_writeout_blocks
+		    && trans->u.prev->transaction_state < TRANS_FLUSHED)
+		{
+			struct journal_trans *prev;
+			prev = trans->u.prev;
+			merge_transactions(prev);
+			if (prev->transaction_state > TRANS_CLOSED)
+				prev->transaction_state = TRANS_CLOSED;
+		}
+	}
 }
 
 /* Free the finished transaction */
@@ -341,7 +449,7 @@ static int flush_transaction(struct defrag_ctx *c, struct journal_trans *trans)
 	sequence = c->journal->next_sequence++;
 	trans_begin = c->journal->tail;
 	tmp = (char *)trans_begin - (char *)c->journal->map;
-	trans->start_block = tmp / c->journal->blocksize;
+	trans->u.start_block = tmp / c->journal->blocksize;
 	count = flush_trans_blocks(c, trans, sequence);
 	if (count < 0)
 		return count;
@@ -464,8 +572,12 @@ int journal_ensure_unprotected(struct defrag_ctx *c, blk64_t start_block,
 				ret = journal_flush_upto(c, trans);
 				if (ret < 0)
 					return ret;
+				extent = trans->protected_extents;
 			}
-			extent = extent->next;
+			else
+			{
+				extent = extent->next;
+			}
 		}
 		block = trans->writeout_blocks;
 		while (block) {
@@ -543,9 +655,9 @@ int sync_journal(struct defrag_ctx *disk)
 		struct journal_trans *trans;
 		struct journal_header_s *hdr;
 		trans = disk->journal->transactions;
-		sb->s_start = htobe32(trans->start_block);
+		sb->s_start = htobe32(trans->u.start_block);
 		hdr = (void *)((char *)disk->journal->map
-		              + disk->journal->blocksize * trans->start_block);
+		              + disk->journal->blocksize * trans->u.start_block);
 		sb->s_sequence = hdr->h_sequence;
 	} else {
 		sb->s_start = 0;
@@ -606,8 +718,8 @@ void journal_mark_synced(struct defrag_ctx *c)
 			c->journal->transactions = trans->next;
 			free_transaction(trans);
 			trans = c->journal->transactions;
-			if (trans && trans->start_block) {
-				offset = trans->start_block;
+			if (trans && trans->u.start_block) {
+				offset = trans->u.start_block;
 				offset *= c->journal->blocksize;
 			} else {
 				offset = c->journal->blocksize;
