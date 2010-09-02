@@ -122,7 +122,7 @@ blk64_t get_physical_block(struct inode *inode, blk64_t logical_block,
 	return ret;
 }
 
-static int merge_extents(struct inode *inode,
+static void merge_extents(struct inode *inode,
                          struct data_extent *extent1,
                          struct data_extent *extent2)
 {
@@ -140,7 +140,6 @@ static int merge_extents(struct inode *inode,
 	num = inode->data->extent_count - pos - 1;
 	memmove(extent2, extent2 + 1, num * sizeof(struct data_extent));
 	inode->data->extent_count--;
-	return 0;
 }
 
 /* If you value your data, you shouldn't call this with a metadata extent */
@@ -148,7 +147,7 @@ int try_extent_merge(struct defrag_ctx *c,
                      struct inode *inode,
                      struct data_extent *extent)
 {
-	int oldcount = -1, count = 0, downcount = 0, ret;
+	int oldcount = -1, count = 0, downcount = 0;
 	char removed_from_tree = 0;
 
 	while (oldcount != count) {
@@ -165,11 +164,7 @@ int try_extent_merge(struct defrag_ctx *c,
 					inode_remove_from_trees(c, inode);
 					removed_from_tree = 1;
 				}
-				ret = merge_extents(inode, prev, extent);
-				if (ret < 0) {
-					insert_data_extent(c, prev);
-					break;
-				}
+				merge_extents(inode, prev, extent);
 				count++;
 				extent -= 1;
 				downcount++;
@@ -186,9 +181,7 @@ int try_extent_merge(struct defrag_ctx *c,
 				inode_remove_from_trees(c, inode);
 				removed_from_tree = 1;
 			}
-			ret = merge_extents(inode, extent, next);
-			if (ret < 0)
-				break;
+			merge_extents(inode, extent, next);
 			count++;
 		}
 	}
