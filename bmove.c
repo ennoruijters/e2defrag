@@ -173,7 +173,7 @@ int move_data_extent(struct defrag_ctx *c, struct data_extent *extent_to_copy,
 		if (ret)
 			return ret;
 		ret = journal_protect_blocks(t, extent_to_copy->start_block,
-		                             end_block);
+		                             extent_to_copy->end_block);
 		if (ret)
 			return ret;
 		ret = __move_block_range(c, extent_to_copy->start_block,
