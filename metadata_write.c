@@ -510,6 +510,7 @@ int move_metadata_extent(struct defrag_ctx *c, struct data_extent *extent,
 	ret = deallocate_space(c, extent->start_block,
 	                       extent->end_block - extent->start_block + 1,
 	                       trans);
+	rb_remove_data_extent(c, extent);
 	extent->end_block -= extent->start_block;
 	extent->start_block = target->extents[0].start_block;
 	extent->end_block += extent->start_block;
