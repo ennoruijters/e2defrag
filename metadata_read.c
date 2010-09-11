@@ -83,7 +83,12 @@ static int do_blocks(struct tmp_extent *first_extent,
 		le->next = NULL;
 		return 1;
 	} else if (block != 0) {
-		if (block != le->e.end_block + 1 || uninit != le->e.uninit) {
+		blk64_t last_logical = le->e.start_logical;
+		last_logical += le->e.end_block - le->e.start_block;
+		if (block != le->e.end_block + 1
+		    || logical_block != last_logical + 1
+		    || uninit != le->e.uninit)
+		{
 			le->next = obstack_alloc(mempool,
 			                         sizeof(struct tmp_extent));
 			*last_extent = le->next;
